@@ -1,0 +1,12 @@
+.{
+    .name = .mbq_lang,
+    .version = "0.1.0",
+    .fingerprint = 0x5895eacf36778c9e,
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
