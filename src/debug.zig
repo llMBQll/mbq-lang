@@ -63,7 +63,7 @@ fn constant_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize) !
     const constant = chunk.code.items[offset + 1];
 
     try stdout.print("{s:<16} {d:4} '", .{ name, constant });
-    try values.print_value(chunk.constants.items[constant]);
+    try chunk.constants.items[constant].print();
     try stdout.print("'\n", .{});
 
     return offset + 2;

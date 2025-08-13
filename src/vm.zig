@@ -62,7 +62,7 @@ pub const VM = struct {
                 } else {
                     for (self.stack.data.items) |value| {
                         try stdout.print("[ ", .{});
-                        try values.print_value(value);
+                        try value.print();
                         try stdout.print(" ]", .{});
                     }
                 }
@@ -83,7 +83,7 @@ pub const VM = struct {
                 OpCode.EQUAL => {
                     const b = self.stack.pop().?;
                     const a = self.stack.pop().?;
-                    try self.stack.push(.{ .bool = values_equal(a, b) });
+                    try self.stack.push(.{ .bool = a.equals(b) });
                 },
                 OpCode.GREATER => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
@@ -147,10 +147,10 @@ pub const VM = struct {
                     try self.stack.push(.{ .number = a / b });
                 },
                 OpCode.NOT => {
-                    try self.stack.push(.{ .bool = is_falsey(self.stack.pop().?) });
+                    try self.stack.push(.{ .bool = self.stack.pop().?.falsey() });
                 },
                 OpCode.RETURN => {
-                    try values.print_value(self.stack.pop().?);
+                    try self.stack.pop().?.print();
                     try stdout.print("\n", .{});
                     return;
                 },
@@ -175,26 +175,6 @@ pub const VM = struct {
         const stderr = std.io.getStdErr().writer();
 
         try stderr.print(message, .{});
-    }
-
-    fn is_falsey(value: Value) bool {
-        switch (value) {
-            .nil => return true,
-            .bool => |v| return !v,
-            .number => |v| return v == 0.0,
-        }
-    }
-
-    fn values_equal(a: Value, b: Value) bool {
-        if (a.tag() != b.tag()) {
-            return false;
-        }
-
-        switch (a) {
-            .nil => return true,
-            .bool => |v| return v == b.bool,
-            .number => |v| return v == b.number,
-        }
     }
 };
 
