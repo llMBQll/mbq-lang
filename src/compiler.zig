@@ -88,9 +88,9 @@ fn parse_precedence(precedence: Precedence) !void {
 
 fn literal() !void {
     switch (parser.previous.token_type) {
-        TokenType.FALSE => try emit_byte(OpCode, OpCode.FALSE),
-        TokenType.NIL => try emit_byte(OpCode, OpCode.NIL),
-        TokenType.TRUE => try emit_byte(OpCode, OpCode.TRUE),
+        TokenType.FALSE => try emit_byte(OpCode.FALSE),
+        TokenType.NIL => try emit_byte(OpCode.NIL),
+        TokenType.TRUE => try emit_byte(OpCode.TRUE),
         else => return, // Unreachable.
     }
 }
@@ -101,16 +101,16 @@ fn binary() !void {
     try parse_precedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
 
     switch (operator_type) {
-        TokenType.BANG_EQUAL => try emit_bytes(OpCode, OpCode.EQUAL, OpCode, OpCode.NOT),
-        TokenType.EQUAL_EQUAL => try emit_byte(OpCode, OpCode.EQUAL),
-        TokenType.GREATER => try emit_byte(OpCode, OpCode.GREATER),
-        TokenType.GREATER_EQUAL => try emit_bytes(OpCode, OpCode.LESS, OpCode, OpCode.NOT),
-        TokenType.LESS => try emit_byte(OpCode, OpCode.LESS),
-        TokenType.LESS_EQUAL => try emit_bytes(OpCode, OpCode.GREATER, OpCode, OpCode.NOT),
-        TokenType.PLUS => try emit_byte(OpCode, OpCode.ADD),
-        TokenType.MINUS => try emit_byte(OpCode, OpCode.SUBTRACT),
-        TokenType.STAR => try emit_byte(OpCode, OpCode.MULTIPLY),
-        TokenType.SLASH => try emit_byte(OpCode, OpCode.DIVIDE),
+        TokenType.BANG_EQUAL => try emit_bytes(OpCode.EQUAL, OpCode.NOT),
+        TokenType.EQUAL_EQUAL => try emit_byte(OpCode.EQUAL),
+        TokenType.GREATER => try emit_byte(OpCode.GREATER),
+        TokenType.GREATER_EQUAL => try emit_bytes(OpCode.LESS, OpCode.NOT),
+        TokenType.LESS => try emit_byte(OpCode.LESS),
+        TokenType.LESS_EQUAL => try emit_bytes(OpCode.GREATER, OpCode.NOT),
+        TokenType.PLUS => try emit_byte(OpCode.ADD),
+        TokenType.MINUS => try emit_byte(OpCode.SUBTRACT),
+        TokenType.STAR => try emit_byte(OpCode.MULTIPLY),
+        TokenType.SLASH => try emit_byte(OpCode.DIVIDE),
         else => return, // Unreachable.
     }
 }
@@ -121,8 +121,8 @@ fn unary() !void {
     try parse_precedence(Precedence.UNARY);
 
     switch (operator_type) {
-        TokenType.BANG => try emit_byte(OpCode, OpCode.NOT),
-        TokenType.MINUS => try emit_byte(OpCode, OpCode.NEGATE),
+        TokenType.BANG => try emit_byte(OpCode.NOT),
+        TokenType.MINUS => try emit_byte(OpCode.NEGATE),
         else => return, // unreachable
     }
 }
@@ -202,21 +202,21 @@ fn current_chunk() *Chunk {
     return compiling_chunk;
 }
 
-fn emit_byte(comptime T: type, byte: T) !void {
-    try current_chunk().write_byte(T, byte, parser.previous.line);
+fn emit_byte(byte: anytype) !void {
+    try current_chunk().write_byte(byte, parser.previous.line);
 }
 
-fn emit_bytes(comptime T1: type, byte1: T1, comptime T2: type, byte2: T2) !void {
-    try emit_byte(T1, byte1);
-    try emit_byte(T2, byte2);
+fn emit_bytes(byte1: anytype, byte2: anytype) !void {
+    try emit_byte(byte1);
+    try emit_byte(byte2);
 }
 
 fn emit_return() !void {
-    try emit_byte(OpCode, OpCode.RETURN);
+    try emit_byte(OpCode.RETURN);
 }
 
 fn emit_constant(value: Value) !void {
-    try emit_bytes(OpCode, OpCode.CONSTANT, u8, try make_constant(value));
+    try emit_bytes(OpCode.CONSTANT, try make_constant(value));
 }
 
 fn make_constant(value: Value) !u8 {

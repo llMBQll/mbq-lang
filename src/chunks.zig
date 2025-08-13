@@ -40,7 +40,8 @@ pub const Chunk = struct {
         self.constants.deinit();
     }
 
-    pub fn write_byte(self: *Self, comptime T: type, val: T, line: usize) !void {
+    pub fn write_byte(self: *Self, val: anytype, line: usize) !void {
+        const T = @TypeOf(val);
         const byte: u8 = switch (T) {
             u8 => val,
             u18, u32, u64, u128, usize => @truncate(val),
