@@ -140,48 +140,72 @@ fn get_rule(token_type: TokenType) *const ParseRule {
     return &rules[@intFromEnum(token_type)];
 }
 
-const rules = [_]ParseRule{
-    .{ .prefix = grouping, .infix = null, .precedence = Precedence.NONE }, // [TokenType.LEFT_PAREN]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.RIGHT_PAREN]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.LEFT_BRACE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.RIGHT_BRACE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.COMMA]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.DOT]
-    .{ .prefix = unary, .infix = binary, .precedence = Precedence.TERM }, // [TokenType.MINUS]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.TERM }, // [TokenType.PLUS]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.SEMICOLON]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.FACTOR }, // [TokenType.SLASH]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.FACTOR }, // [TokenType.STAR]
-    .{ .prefix = unary, .infix = null, .precedence = Precedence.NONE }, // [TokenType.BANG]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.EQUALITY }, // [TokenType.BANG_EQUAL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.EQUAL]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.EQUALITY }, // [TokenType.EQUAL_EQUAL]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.GREATER]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.GREATER_EQUAL]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.LESS]
-    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.LESS_EQUAL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.IDENTIFIER]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.STRING]
-    .{ .prefix = number, .infix = null, .precedence = Precedence.NONE }, // [TokenType.NUMBER]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.AND]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.CLASS]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.ELSE]
-    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FALSE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FOR]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FUN]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.IF]
-    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.NIL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.OR]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.PRINT]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.RETURN]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.SUPER]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.THIS]
-    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.TRUE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.VAR]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.WHILE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.ERROR]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.EOF]
-};
+const rule_count = @typeInfo(TokenType).@"enum".fields.len;
+
+fn make_parse_rule_table(input_table: [rule_count]struct { TokenType, ?ParseFn, ?ParseFn, Precedence }) [rule_count]ParseRule {
+    var output: [rule_count]ParseRule = undefined;
+
+    for (0..rule_count) |idx| {
+        const token_type = input_table[idx].@"0";
+
+        if (@intFromEnum(token_type) != idx) {
+            @compileError(std.fmt.comptimePrint(
+                "Parse rule out of order. {s} ({d}), found at index {d}",
+                .{ @tagName(token_type), @intFromEnum(token_type), idx },
+            ));
+        }
+        output[idx] = .{
+            .prefix = input_table[idx].@"1",
+            .infix = input_table[idx].@"2",
+            .precedence = input_table[idx].@"3",
+        };
+    }
+
+    return output;
+}
+
+const rules = make_parse_rule_table(.{
+    .{ TokenType.LEFT_PAREN, grouping, null, Precedence.NONE },
+    .{ TokenType.RIGHT_PAREN, null, null, Precedence.NONE },
+    .{ TokenType.LEFT_BRACE, null, null, Precedence.NONE },
+    .{ TokenType.RIGHT_BRACE, null, null, Precedence.NONE },
+    .{ TokenType.COMMA, null, null, Precedence.NONE },
+    .{ TokenType.DOT, null, null, Precedence.NONE },
+    .{ TokenType.MINUS, unary, binary, Precedence.TERM },
+    .{ TokenType.PLUS, null, binary, Precedence.TERM },
+    .{ TokenType.SEMICOLON, null, null, Precedence.NONE },
+    .{ TokenType.SLASH, null, binary, Precedence.FACTOR },
+    .{ TokenType.STAR, null, binary, Precedence.FACTOR },
+    .{ TokenType.BANG, unary, null, Precedence.NONE },
+    .{ TokenType.BANG_EQUAL, null, binary, Precedence.EQUALITY },
+    .{ TokenType.EQUAL, null, null, Precedence.NONE },
+    .{ TokenType.EQUAL_EQUAL, null, binary, Precedence.EQUALITY },
+    .{ TokenType.GREATER, null, binary, Precedence.COMPARISON },
+    .{ TokenType.GREATER_EQUAL, null, binary, Precedence.COMPARISON },
+    .{ TokenType.LESS, null, binary, Precedence.COMPARISON },
+    .{ TokenType.LESS_EQUAL, null, binary, Precedence.COMPARISON },
+    .{ TokenType.IDENTIFIER, null, null, Precedence.NONE },
+    .{ TokenType.STRING, null, null, Precedence.NONE },
+    .{ TokenType.NUMBER, number, null, Precedence.NONE },
+    .{ TokenType.AND, null, null, Precedence.NONE },
+    .{ TokenType.CLASS, null, null, Precedence.NONE },
+    .{ TokenType.ELSE, null, null, Precedence.NONE },
+    .{ TokenType.FALSE, literal, null, Precedence.NONE },
+    .{ TokenType.FOR, null, null, Precedence.NONE },
+    .{ TokenType.FN, null, null, Precedence.NONE },
+    .{ TokenType.IF, null, null, Precedence.NONE },
+    .{ TokenType.NIL, literal, null, Precedence.NONE },
+    .{ TokenType.OR, null, null, Precedence.NONE },
+    .{ TokenType.PRINT, null, null, Precedence.NONE },
+    .{ TokenType.RETURN, null, null, Precedence.NONE },
+    .{ TokenType.SUPER, null, null, Precedence.NONE },
+    .{ TokenType.THIS, null, null, Precedence.NONE },
+    .{ TokenType.TRUE, literal, null, Precedence.NONE },
+    .{ TokenType.VAR, null, null, Precedence.NONE },
+    .{ TokenType.WHILE, null, null, Precedence.NONE },
+    .{ TokenType.ERROR, null, null, Precedence.NONE },
+    .{ TokenType.EOF, null, null, Precedence.NONE },
+});
 
 fn number() !void {
     const value = try std.fmt.parseFloat(f64, parser.previous.token);
