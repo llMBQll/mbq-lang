@@ -100,6 +100,8 @@ pub const Lexer = struct {
                         while (self.peek() != '\n' and !self.is_at_end()) {
                             _ = self.advance();
                         }
+                    } else {
+                        return;
                     }
                 },
                 else => return,

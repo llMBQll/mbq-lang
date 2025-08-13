@@ -86,12 +86,27 @@ fn parse_precedence(precedence: Precedence) !void {
     }
 }
 
+fn literal() !void {
+    switch (parser.previous.token_type) {
+        TokenType.FALSE => try emit_byte(OpCode, OpCode.FALSE),
+        TokenType.NIL => try emit_byte(OpCode, OpCode.NIL),
+        TokenType.TRUE => try emit_byte(OpCode, OpCode.TRUE),
+        else => return, // Unreachable.
+    }
+}
+
 fn binary() !void {
     const operator_type = parser.previous.token_type;
     const rule = get_rule(operator_type);
     try parse_precedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
 
     switch (operator_type) {
+        TokenType.BANG_EQUAL => try emit_bytes(OpCode, OpCode.EQUAL, OpCode, OpCode.NOT),
+        TokenType.EQUAL_EQUAL => try emit_byte(OpCode, OpCode.EQUAL),
+        TokenType.GREATER => try emit_byte(OpCode, OpCode.GREATER),
+        TokenType.GREATER_EQUAL => try emit_bytes(OpCode, OpCode.LESS, OpCode, OpCode.NOT),
+        TokenType.LESS => try emit_byte(OpCode, OpCode.LESS),
+        TokenType.LESS_EQUAL => try emit_bytes(OpCode, OpCode.GREATER, OpCode, OpCode.NOT),
         TokenType.PLUS => try emit_byte(OpCode, OpCode.ADD),
         TokenType.MINUS => try emit_byte(OpCode, OpCode.SUBTRACT),
         TokenType.STAR => try emit_byte(OpCode, OpCode.MULTIPLY),
@@ -106,6 +121,7 @@ fn unary() !void {
     try parse_precedence(Precedence.UNARY);
 
     switch (operator_type) {
+        TokenType.BANG => try emit_byte(OpCode, OpCode.NOT),
         TokenType.MINUS => try emit_byte(OpCode, OpCode.NEGATE),
         else => return, // unreachable
     }
@@ -136,31 +152,31 @@ const rules = [_]ParseRule{
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.SEMICOLON]
     .{ .prefix = null, .infix = binary, .precedence = Precedence.FACTOR }, // [TokenType.SLASH]
     .{ .prefix = null, .infix = binary, .precedence = Precedence.FACTOR }, // [TokenType.STAR]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.BANG]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.BANG_EQUAL]
+    .{ .prefix = unary, .infix = null, .precedence = Precedence.NONE }, // [TokenType.BANG]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.EQUALITY }, // [TokenType.BANG_EQUAL]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.EQUAL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.EQUAL_EQUAL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.GREATER]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.GREATER_EQUAL]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.LESS]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.LESS_EQUAL]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.EQUALITY }, // [TokenType.EQUAL_EQUAL]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.GREATER]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.GREATER_EQUAL]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.LESS]
+    .{ .prefix = null, .infix = binary, .precedence = Precedence.COMPARISON }, // [TokenType.LESS_EQUAL]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.IDENTIFIER]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.STRING]
     .{ .prefix = number, .infix = null, .precedence = Precedence.NONE }, // [TokenType.NUMBER]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.AND]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.CLASS]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.ELSE]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FALSE]
+    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FALSE]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FOR]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.FUN]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.IF]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.NIL]
+    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.NIL]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.OR]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.PRINT]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.RETURN]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.SUPER]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.THIS]
-    .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.TRUE]
+    .{ .prefix = literal, .infix = null, .precedence = Precedence.NONE }, // [TokenType.TRUE]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.VAR]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.WHILE]
     .{ .prefix = null, .infix = null, .precedence = Precedence.NONE }, // [TokenType.ERROR]
@@ -169,7 +185,7 @@ const rules = [_]ParseRule{
 
 fn number() !void {
     const value = try std.fmt.parseFloat(f64, parser.previous.token);
-    try emit_constant(value);
+    try emit_constant(.{ .number = value });
 }
 
 fn end_compiler() !void {
@@ -190,9 +206,9 @@ fn emit_byte(comptime T: type, byte: T) !void {
     try current_chunk().write_byte(T, byte, parser.previous.line);
 }
 
-fn emit_bytes(op: OpCode, byte: u8) !void {
-    try emit_byte(OpCode, op);
-    try emit_byte(u8, byte);
+fn emit_bytes(comptime T1: type, byte1: T1, comptime T2: type, byte2: T2) !void {
+    try emit_byte(T1, byte1);
+    try emit_byte(T2, byte2);
 }
 
 fn emit_return() !void {
@@ -200,7 +216,7 @@ fn emit_return() !void {
 }
 
 fn emit_constant(value: Value) !void {
-    try emit_bytes(OpCode.CONSTANT, try make_constant(value));
+    try emit_bytes(OpCode, OpCode.CONSTANT, u8, try make_constant(value));
 }
 
 fn make_constant(value: Value) !u8 {

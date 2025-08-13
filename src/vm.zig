@@ -8,6 +8,7 @@ const values = @import("values.zig");
 const Chunk = chunks.Chunk;
 const OpCode = chunks.OpCode;
 const Value = values.Value;
+const ValueType = values.ValueType;
 
 const DEBUG_TRACING = true;
 
@@ -76,28 +77,77 @@ pub const VM = struct {
                     const constant = read_constant(self);
                     try self.stack.push(constant);
                 },
+                OpCode.NIL => try self.stack.push(.nil),
+                OpCode.TRUE => try self.stack.push(.{ .bool = true }),
+                OpCode.FALSE => try self.stack.push(.{ .bool = false }),
+                OpCode.EQUAL => {
+                    const b = self.stack.pop().?;
+                    const a = self.stack.pop().?;
+                    try self.stack.push(.{ .bool = values_equal(a, b) });
+                },
+                OpCode.GREATER => {
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .bool = a > b });
+                },
+                OpCode.LESS => {
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .bool = a < b });
+                },
                 OpCode.NEGATE => {
-                    try self.stack.push(-self.stack.pop().?);
+                    if (self.stack.peek(0).tag() != ValueType.number) {
+                        try self.runtime_error("Operand must be a number.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    try self.stack.push(.{ .number = -self.stack.pop().?.number });
                 },
                 OpCode.ADD => {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    try self.stack.push(a + b);
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .number = a + b });
                 },
                 OpCode.SUBTRACT => {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    try self.stack.push(a - b);
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .number = a - b });
                 },
                 OpCode.MULTIPLY => {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    try self.stack.push(a * b);
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .number = a * b });
                 },
                 OpCode.DIVIDE => {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    try self.stack.push(a / b);
+                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                        try self.runtime_error("Operands must be numbers.");
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    const b = self.stack.pop().?.number;
+                    const a = self.stack.pop().?.number;
+                    try self.stack.push(.{ .number = a / b });
+                },
+                OpCode.NOT => {
+                    try self.stack.push(.{ .bool = is_falsey(self.stack.pop().?) });
                 },
                 OpCode.RETURN => {
                     try values.print_value(self.stack.pop().?);
@@ -117,6 +167,34 @@ pub const VM = struct {
     fn read_constant(self: *Self) Value {
         const offset = self.read_byte();
         return self.chunk.?.constants.items[offset];
+    }
+
+    fn runtime_error(self: *Self, comptime message: []const u8) !void {
+        _ = self;
+
+        const stderr = std.io.getStdErr().writer();
+
+        try stderr.print(message, .{});
+    }
+
+    fn is_falsey(value: Value) bool {
+        switch (value) {
+            .nil => return true,
+            .bool => |v| return !v,
+            .number => |v| return v == 0.0,
+        }
+    }
+
+    fn values_equal(a: Value, b: Value) bool {
+        if (a.tag() != b.tag()) {
+            return false;
+        }
+
+        switch (a) {
+            .nil => return true,
+            .bool => |v| return v == b.bool,
+            .number => |v| return v == b.number,
+        }
     }
 };
 
@@ -145,7 +223,11 @@ const Stack = struct {
     }
 
     pub fn top(self: *Self) !*Value {
-        return &self.data.items[self.data.items.len];
+        return &self.data.items[self.data.items.len - 1];
+    }
+
+    pub fn peek(self: *Self, distance: usize) *Value {
+        return &self.data.items[self.data.items.len - 1 - distance];
     }
 
     pub fn reset(self: *Self) !void {

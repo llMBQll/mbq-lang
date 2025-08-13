@@ -30,10 +30,17 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize) !usize {
     const instruction = chunk.code.items[offset];
     switch (instruction) {
         @intFromEnum(OpCode.CONSTANT) => return try constant_instruction("OP_CONSTANT", chunk, offset),
+        @intFromEnum(OpCode.NIL) => return try simple_instruction("OP_NIL", offset),
+        @intFromEnum(OpCode.TRUE) => return try simple_instruction("OP_TRUE", offset),
+        @intFromEnum(OpCode.FALSE) => return try simple_instruction("OP_FALSE", offset),
+        @intFromEnum(OpCode.EQUAL) => return try simple_instruction("OP_EQUAL", offset),
+        @intFromEnum(OpCode.GREATER) => return try simple_instruction("OP_GREATER", offset),
+        @intFromEnum(OpCode.LESS) => return try simple_instruction("OP_LESS", offset),
         @intFromEnum(OpCode.ADD) => return try simple_instruction("OP_ADD", offset),
         @intFromEnum(OpCode.SUBTRACT) => return try simple_instruction("OP_SUBTRACT", offset),
         @intFromEnum(OpCode.MULTIPLY) => return try simple_instruction("OP_MULTIPLY", offset),
         @intFromEnum(OpCode.DIVIDE) => return try simple_instruction("OP_DIVIDE", offset),
+        @intFromEnum(OpCode.NOT) => return try simple_instruction("OP_NOT", offset),
         @intFromEnum(OpCode.NEGATE) => return try simple_instruction("OP_NEGATE", offset),
         @intFromEnum(OpCode.RETURN) => return try simple_instruction("OP_RETURN", offset),
         else => {

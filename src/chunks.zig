@@ -4,11 +4,18 @@ const values = @import("values.zig");
 
 pub const OpCode = enum(u8) {
     CONSTANT,
+    NIL,
+    TRUE,
+    FALSE,
+    EQUAL,
+    GREATER,
+    LESS,
     ADD,
     SUBTRACT,
     MULTIPLY,
     DIVIDE,
     NEGATE,
+    NOT,
     RETURN,
 };
 
