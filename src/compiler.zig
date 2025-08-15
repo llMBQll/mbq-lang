@@ -3,7 +3,9 @@ const std = @import("std");
 const debug = @import("debug.zig");
 const chunks = @import("chunks.zig");
 const lexer_mod = @import("lexer.zig");
+const objects = @import("objects.zig");
 const values = @import("values.zig");
+const vm_mod = @import("vm.zig");
 
 const DEBUG_TRACING = true;
 
@@ -13,12 +15,14 @@ const OpCode = chunks.OpCode;
 const Token = lexer_mod.Token;
 const TokenType = lexer_mod.TokenType;
 const Value = values.Value;
+const VM = vm_mod.VM;
 
 const Parser = struct {
     current: Token,
     previous: Token,
     had_error: bool,
     panic_mode: bool,
+    vm: *VM,
 };
 
 const Precedence = enum {
@@ -47,7 +51,7 @@ var lexer: Lexer = undefined;
 var parser: Parser = undefined;
 var compiling_chunk: *Chunk = undefined;
 
-pub fn compile(source: []const u8, chunk: *Chunk) !bool {
+pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
     defer end_compiler() catch {};
 
     parser = .{
@@ -55,6 +59,7 @@ pub fn compile(source: []const u8, chunk: *Chunk) !bool {
         .previous = undefined,
         .had_error = false,
         .panic_mode = false,
+        .vm = vm,
     };
 
     lexer = Lexer.init(source);
@@ -136,6 +141,18 @@ fn expression() !void {
     try parse_precedence(Precedence.ASSIGNMENT);
 }
 
+fn number() !void {
+    const value = try std.fmt.parseFloat(f64, parser.previous.token);
+    try emit_constant(.{ .number = value });
+}
+
+fn string() !void {
+    const len = parser.previous.token.len;
+    const str = try objects.copy_string(parser.vm, parser.previous.token[1 .. len - 1]);
+    const val = Value{ .object = @ptrCast(str) };
+    try emit_constant(val);
+}
+
 fn get_rule(token_type: TokenType) *const ParseRule {
     return &rules[@intFromEnum(token_type)];
 }
@@ -185,7 +202,7 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.LESS, null, binary, Precedence.COMPARISON },
     .{ TokenType.LESS_EQUAL, null, binary, Precedence.COMPARISON },
     .{ TokenType.IDENTIFIER, null, null, Precedence.NONE },
-    .{ TokenType.STRING, null, null, Precedence.NONE },
+    .{ TokenType.STRING, string, null, Precedence.NONE },
     .{ TokenType.NUMBER, number, null, Precedence.NONE },
     .{ TokenType.AND, null, null, Precedence.NONE },
     .{ TokenType.CLASS, null, null, Precedence.NONE },
@@ -206,11 +223,6 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.ERROR, null, null, Precedence.NONE },
     .{ TokenType.EOF, null, null, Precedence.NONE },
 });
-
-fn number() !void {
-    const value = try std.fmt.parseFloat(f64, parser.previous.token);
-    try emit_constant(.{ .number = value });
-}
 
 fn end_compiler() !void {
     try emit_return();

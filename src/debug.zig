@@ -14,6 +14,8 @@ pub fn disassemble_chunk(chunk: *chunks.Chunk, name: []const u8) !void {
     while (offset < chunk.code.items.len) {
         offset = try disassemble_instruction(chunk, offset);
     }
+
+    try stdout.print("== {s} end ==\n", .{name});
 }
 
 pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize) !usize {

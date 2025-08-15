@@ -3,10 +3,14 @@ const std = @import("std");
 const chunks = @import("chunks.zig");
 const compiler = @import("compiler.zig");
 const debug = @import("debug.zig");
+const objects = @import("objects.zig");
 const values = @import("values.zig");
 
 const Chunk = chunks.Chunk;
+const Obj = objects.Obj;
+const ObjType = objects.ObjType;
 const OpCode = chunks.OpCode;
+const String = objects.String;
 const Value = values.Value;
 const ValueType = values.ValueType;
 
@@ -23,24 +27,35 @@ pub const VM = struct {
     chunk: ?*Chunk,
     ip: usize,
     stack: Stack,
+    allocator: std.mem.Allocator,
+    obj_list: ?*Obj,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .chunk = null,
             .ip = 0,
             .stack = try Stack.init(allocator),
+            .allocator = allocator,
+            .obj_list = null,
         };
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
         self.stack.deinit();
+
+        var current = self.obj_list;
+        while (current) |obj| {
+            const next = obj.next;
+            objects.deallocate(self, obj);
+            current = next;
+        }
     }
 
     pub fn interpret(self: *Self, source: []const u8, allocator: std.mem.Allocator) !void {
         var chunk = try chunks.Chunk.init(allocator);
         defer chunk.deinit();
 
-        const ok = try compiler.compile(source, &chunk);
+        const ok = try compiler.compile(self, source, &chunk);
         if (!ok) {
             return InterpretError.COMPILE_ERROR;
         }
@@ -111,13 +126,16 @@ pub const VM = struct {
                     try self.stack.push(.{ .number = -self.stack.pop().?.number });
                 },
                 OpCode.ADD => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
+                    if (objects.is(self.stack.peek(0), ObjType.STRING) and objects.is(self.stack.peek(1), ObjType.STRING)) {
+                        try self.concatenate();
+                    } else if (self.stack.peek(0).tag() == ValueType.number and self.stack.peek(1).tag() == ValueType.number) {
+                        const b = self.stack.pop().?.number;
+                        const a = self.stack.pop().?.number;
+                        try self.stack.push(.{ .number = a + b });
+                    } else {
                         try self.runtime_error("Operands must be numbers.");
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .number = a + b });
                 },
                 OpCode.SUBTRACT => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
@@ -175,6 +193,20 @@ pub const VM = struct {
         const stderr = std.io.getStdErr().writer();
 
         try stderr.print(message, .{});
+    }
+
+    fn concatenate(self: *Self) !void {
+        const b: *String = @ptrCast(self.stack.pop().?.object);
+        const a: *String = @ptrCast(self.stack.pop().?.object);
+
+        const len = a.chars.len + b.chars.len;
+        const chars = try self.allocator.alloc(u8, len);
+
+        std.mem.copyForwards(u8, chars[0..a.chars.len], a.chars);
+        std.mem.copyForwards(u8, chars[a.chars.len..len], b.chars);
+
+        const str = try objects.take_string(self, chars);
+        try self.stack.push(.{ .object = @ptrCast(str) });
     }
 };
 
