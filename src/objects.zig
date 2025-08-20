@@ -35,6 +35,7 @@ pub const String = struct {
 
     obj: Obj,
     chars: []const u8,
+    hash: u32,
 };
 
 pub fn is(value: *Value, obj_type: ObjType) bool {
@@ -42,18 +43,38 @@ pub fn is(value: *Value, obj_type: ObjType) bool {
 }
 
 pub fn copy_string(vm: *VM, chars_in: []const u8) !*String {
+    const hash = hash_string(chars_in);
+
+    const interned = vm.strings.find_string(chars_in, hash);
+    if (interned) |str| {
+        return str;
+    }
+
     const chars = try vm.allocator.alloc(u8, chars_in.len);
     std.mem.copyForwards(u8, chars, chars_in);
 
-    const str = try allocate(vm, String);
-    str.chars = chars;
-
-    return str;
+    return allocate_string(vm, chars, hash);
 }
 
-pub fn take_string(vm: *VM, chars_in: []const u8) !*String {
+pub fn take_string(vm: *VM, chars: []const u8) !*String {
+    const hash = hash_string(chars);
+
+    const interned = vm.strings.find_string(chars, hash);
+    if (interned) |str| {
+        vm.allocator.free(chars);
+        return str;
+    }
+
+    return allocate_string(vm, chars, hash);
+}
+
+fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
     const str = try allocate(vm, String);
-    str.chars = chars_in;
+    str.chars = chars;
+    str.hash = hash;
+
+    _ = try vm.strings.set(str, .nil);
+
     return str;
 }
 
@@ -75,4 +96,13 @@ pub fn deallocate(vm: *VM, obj: *Obj) void {
             vm.allocator.destroy(str);
         },
     }
+}
+
+fn hash_string(key: []const u8) u32 {
+    var hash: u32 = 2166136261;
+    for (key) |c| {
+        hash ^= c;
+        hash *%= 16777619;
+    }
+    return hash;
 }

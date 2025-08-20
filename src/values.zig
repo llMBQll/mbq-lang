@@ -62,11 +62,7 @@ pub const Value = union(ValueType) {
             .nil => return true,
             .bool => |v| return v == other.bool,
             .number => |v| return v == other.number,
-            .object => |v| {
-                const lhs: *String = @ptrCast(v);
-                const rhs: *String = @ptrCast(other.object);
-                return std.mem.eql(u8, lhs.chars, rhs.chars);
-            },
+            .object => |v| return v == other.object,
         }
     }
 };

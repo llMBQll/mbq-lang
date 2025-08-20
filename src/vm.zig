@@ -4,6 +4,7 @@ const chunks = @import("chunks.zig");
 const compiler = @import("compiler.zig");
 const debug = @import("debug.zig");
 const objects = @import("objects.zig");
+const table = @import("table.zig");
 const values = @import("values.zig");
 
 const Chunk = chunks.Chunk;
@@ -11,6 +12,7 @@ const Obj = objects.Obj;
 const ObjType = objects.ObjType;
 const OpCode = chunks.OpCode;
 const String = objects.String;
+const Table = table.Table;
 const Value = values.Value;
 const ValueType = values.ValueType;
 
@@ -29,6 +31,7 @@ pub const VM = struct {
     stack: Stack,
     allocator: std.mem.Allocator,
     obj_list: ?*Obj,
+    strings: Table,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
@@ -37,11 +40,13 @@ pub const VM = struct {
             .stack = try Stack.init(allocator),
             .allocator = allocator,
             .obj_list = null,
+            .strings = Table.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.stack.deinit();
+        self.strings.deinit();
 
         var current = self.obj_list;
         while (current) |obj| {
