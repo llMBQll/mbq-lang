@@ -35,6 +35,10 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize) !usize {
         @intFromEnum(OpCode.NIL) => return try simple_instruction("OP_NIL", offset),
         @intFromEnum(OpCode.TRUE) => return try simple_instruction("OP_TRUE", offset),
         @intFromEnum(OpCode.FALSE) => return try simple_instruction("OP_FALSE", offset),
+        @intFromEnum(OpCode.POP) => return try simple_instruction("OP_POP", offset),
+        @intFromEnum(OpCode.GET_GLOBAL) => return try constant_instruction("OP_GET_GLOBAL", chunk, offset),
+        @intFromEnum(OpCode.DEFINE_GLOBAL) => return try constant_instruction("OP_DEFINE_GLOBAL", chunk, offset),
+        @intFromEnum(OpCode.SET_GLOBAL) => return try constant_instruction("OP_SET_GLOBAL", chunk, offset),
         @intFromEnum(OpCode.EQUAL) => return try simple_instruction("OP_EQUAL", offset),
         @intFromEnum(OpCode.GREATER) => return try simple_instruction("OP_GREATER", offset),
         @intFromEnum(OpCode.LESS) => return try simple_instruction("OP_LESS", offset),
@@ -44,6 +48,7 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize) !usize {
         @intFromEnum(OpCode.DIVIDE) => return try simple_instruction("OP_DIVIDE", offset),
         @intFromEnum(OpCode.NOT) => return try simple_instruction("OP_NOT", offset),
         @intFromEnum(OpCode.NEGATE) => return try simple_instruction("OP_NEGATE", offset),
+        @intFromEnum(OpCode.PRINT) => return try simple_instruction("OP_PRINT", offset),
         @intFromEnum(OpCode.RETURN) => return try simple_instruction("OP_RETURN", offset),
         else => {
             try stdout.print("Unknown instruction [{d}]\n", .{instruction});

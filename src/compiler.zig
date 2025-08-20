@@ -39,7 +39,7 @@ const Precedence = enum {
     PRIMARY,
 };
 
-const ParseFn = *const fn () anyerror!void;
+const ParseFn = *const fn (bool) anyerror!void;
 
 const ParseRule = struct {
     prefix: ?ParseFn,
@@ -68,7 +68,11 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
     compiling_chunk = chunk;
 
     try advance();
-    try expression();
+
+    while (!try match(TokenType.EOF)) {
+        try declaration();
+    }
+
     try consume(TokenType.EOF, "Expected end of expression.");
 
     return !parser.had_error;
@@ -77,21 +81,26 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
 fn parse_precedence(precedence: Precedence) !void {
     try advance();
 
-    const prefix_rule = get_rule(parser.previous.token_type).prefix;
-    if (prefix_rule) |rule| {
-        try rule();
-    } else {
+    const can_assign = @intFromEnum(precedence) <= @intFromEnum(Precedence.ASSIGNMENT);
+
+    const prefix_rule = get_rule(parser.previous.token_type).prefix orelse {
         try err("Expected expression.");
-    }
+        return;
+    };
+    try prefix_rule(can_assign);
 
     while (@intFromEnum(precedence) <= @intFromEnum(get_rule(parser.current.token_type).precedence)) {
         try advance();
         const infix_rule = get_rule(parser.previous.token_type).infix;
-        try infix_rule.?();
+        try infix_rule.?(can_assign);
+    }
+
+    if (can_assign and try match(TokenType.EQUAL)) {
+        try err("Invalid assignment target.");
     }
 }
 
-fn literal() !void {
+fn literal(_: bool) !void {
     switch (parser.previous.token_type) {
         TokenType.FALSE => try emit_byte(OpCode.FALSE),
         TokenType.NIL => try emit_byte(OpCode.NIL),
@@ -100,7 +109,7 @@ fn literal() !void {
     }
 }
 
-fn binary() !void {
+fn binary(_: bool) !void {
     const operator_type = parser.previous.token_type;
     const rule = get_rule(operator_type);
     try parse_precedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
@@ -120,7 +129,7 @@ fn binary() !void {
     }
 }
 
-fn unary() !void {
+fn unary(_: bool) !void {
     const operator_type = parser.previous.token_type;
 
     try parse_precedence(Precedence.UNARY);
@@ -132,7 +141,7 @@ fn unary() !void {
     }
 }
 
-fn grouping() !void {
+fn grouping(_: bool) !void {
     try expression();
     try consume(TokenType.RIGHT_PAREN, "Expect ')' after expression.");
 }
@@ -141,16 +150,119 @@ fn expression() !void {
     try parse_precedence(Precedence.ASSIGNMENT);
 }
 
-fn number() !void {
+fn expression_statement() !void {
+    try expression();
+    try consume(TokenType.SEMICOLON, "Expect ';' after expression.");
+    try emit_byte(OpCode.POP);
+}
+
+fn declaration() !void {
+    if (try match(TokenType.VAR)) {
+        try var_declaration();
+    } else {
+        try statement();
+    }
+
+    if (parser.panic_mode) {
+        try synchronize();
+    }
+}
+
+fn var_declaration() !void {
+    const global = try parse_variable("Expect variable name.");
+
+    if (try match(TokenType.EQUAL)) {
+        try expression();
+    } else {
+        try emit_byte(OpCode.NIL);
+    }
+    try consume(TokenType.SEMICOLON, "Expect ';' after variable declaration.");
+
+    try define_variable(global);
+}
+
+fn define_variable(global: u8) !void {
+    try emit_bytes(OpCode.DEFINE_GLOBAL, global);
+}
+
+fn parse_variable(comptime error_message: []const u8) !u8 {
+    try consume(TokenType.IDENTIFIER, error_message);
+    return try identifier_constant(&parser.previous);
+}
+
+fn identifier_constant(name: *const Token) !u8 {
+    const str = try objects.copy_string(parser.vm, name.token);
+    return make_constant(.{ .object = @ptrCast(str) });
+}
+
+fn statement() !void {
+    if (try match(TokenType.PRINT)) {
+        try print_statement();
+    } else {
+        try expression_statement();
+    }
+}
+
+fn print_statement() !void {
+    try expression();
+    try consume(TokenType.SEMICOLON, "Expect ';' after value.");
+    try emit_byte(OpCode.PRINT);
+}
+
+fn synchronize() !void {
+    parser.panic_mode = false;
+
+    while (parser.current.token_type != TokenType.EOF) {
+        if (parser.previous.token_type == TokenType.SEMICOLON) {
+            return;
+        }
+
+        switch (parser.current.token_type) {
+            TokenType.CLASS,
+            TokenType.FN,
+            TokenType.VAR,
+            TokenType.FOR,
+            TokenType.IF,
+            TokenType.WHILE,
+            TokenType.PRINT,
+            TokenType.RETURN,
+            => {
+                return;
+            },
+            else => {
+                // Do nothing
+            },
+        }
+
+        try advance();
+    }
+}
+
+fn number(_: bool) !void {
     const value = try std.fmt.parseFloat(f64, parser.previous.token);
     try emit_constant(.{ .number = value });
 }
 
-fn string() !void {
+fn string(_: bool) !void {
     const len = parser.previous.token.len;
     const str = try objects.copy_string(parser.vm, parser.previous.token[1 .. len - 1]);
     const val = Value{ .object = @ptrCast(str) };
     try emit_constant(val);
+}
+
+fn variable(can_assign: bool) !void {
+    try named_variable(&parser.previous, can_assign);
+}
+
+fn named_variable(name: *const Token, can_assign: bool) !void {
+    const arg = try identifier_constant(name);
+
+    if (can_assign and try match(TokenType.EQUAL)) {
+        try expression();
+        try emit_bytes(OpCode.SET_GLOBAL, arg);
+    } else {
+        try emit_bytes(OpCode.GET_GLOBAL, arg);
+    }
 }
 
 fn get_rule(token_type: TokenType) *const ParseRule {
@@ -201,7 +313,7 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.GREATER_EQUAL, null, binary, Precedence.COMPARISON },
     .{ TokenType.LESS, null, binary, Precedence.COMPARISON },
     .{ TokenType.LESS_EQUAL, null, binary, Precedence.COMPARISON },
-    .{ TokenType.IDENTIFIER, null, null, Precedence.NONE },
+    .{ TokenType.IDENTIFIER, variable, null, Precedence.NONE },
     .{ TokenType.STRING, string, null, Precedence.NONE },
     .{ TokenType.NUMBER, number, null, Precedence.NONE },
     .{ TokenType.AND, null, null, Precedence.NONE },
@@ -286,6 +398,18 @@ fn consume(token_type: TokenType, message: []const u8) !void {
     } else {
         try error_at_current(message);
     }
+}
+
+fn check(token_type: TokenType) bool {
+    return parser.current.token_type == token_type;
+}
+
+fn match(token_type: TokenType) !bool {
+    if (!check(token_type)) {
+        return false;
+    }
+    try advance();
+    return true;
 }
 
 fn error_at_current(message: []const u8) !void {

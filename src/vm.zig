@@ -31,6 +31,7 @@ pub const VM = struct {
     stack: Stack,
     allocator: std.mem.Allocator,
     obj_list: ?*Obj,
+    globals: Table,
     strings: Table,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
@@ -40,13 +41,15 @@ pub const VM = struct {
             .stack = try Stack.init(allocator),
             .allocator = allocator,
             .obj_list = null,
+            .globals = Table.init(allocator),
             .strings = Table.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.stack.deinit();
+        self.globals.deinit();
         self.strings.deinit();
+        self.stack.deinit();
 
         var current = self.obj_list;
         while (current) |obj| {
@@ -100,6 +103,29 @@ pub const VM = struct {
                 OpCode.NIL => try self.stack.push(.nil),
                 OpCode.TRUE => try self.stack.push(.{ .bool = true }),
                 OpCode.FALSE => try self.stack.push(.{ .bool = false }),
+                OpCode.POP => _ = self.stack.pop(),
+                OpCode.GET_GLOBAL => {
+                    const name: *String = @ptrCast(self.read_constant().object);
+                    if (self.globals.get(name)) |value| {
+                        try self.stack.push(value);
+                    } else {
+                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                },
+                OpCode.DEFINE_GLOBAL => {
+                    const name: *String = @ptrCast(self.read_constant().object);
+                    _ = try self.globals.set(name, self.stack.pop().?);
+                },
+                OpCode.SET_GLOBAL => {
+                    const name: *String = @ptrCast(self.read_constant().object);
+                    const is_new = try self.globals.set(name, self.stack.peek(0).*);
+                    if (is_new) {
+                        _ = self.globals.delete(name);
+                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                },
                 OpCode.EQUAL => {
                     const b = self.stack.pop().?;
                     const a = self.stack.pop().?;
@@ -107,7 +133,7 @@ pub const VM = struct {
                 },
                 OpCode.GREATER => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     const b = self.stack.pop().?.number;
@@ -116,7 +142,7 @@ pub const VM = struct {
                 },
                 OpCode.LESS => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     const b = self.stack.pop().?.number;
@@ -125,7 +151,7 @@ pub const VM = struct {
                 },
                 OpCode.NEGATE => {
                     if (self.stack.peek(0).tag() != ValueType.number) {
-                        try self.runtime_error("Operand must be a number.");
+                        try self.runtime_error("Operand must be a number.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     try self.stack.push(.{ .number = -self.stack.pop().?.number });
@@ -138,13 +164,13 @@ pub const VM = struct {
                         const a = self.stack.pop().?.number;
                         try self.stack.push(.{ .number = a + b });
                     } else {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                 },
                 OpCode.SUBTRACT => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     const b = self.stack.pop().?.number;
@@ -153,7 +179,7 @@ pub const VM = struct {
                 },
                 OpCode.MULTIPLY => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     const b = self.stack.pop().?.number;
@@ -162,7 +188,7 @@ pub const VM = struct {
                 },
                 OpCode.DIVIDE => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.");
+                        try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
                     const b = self.stack.pop().?.number;
@@ -172,9 +198,11 @@ pub const VM = struct {
                 OpCode.NOT => {
                     try self.stack.push(.{ .bool = self.stack.pop().?.falsey() });
                 },
-                OpCode.RETURN => {
+                OpCode.PRINT => {
                     try self.stack.pop().?.print();
                     try stdout.print("\n", .{});
+                },
+                OpCode.RETURN => {
                     return;
                 },
             }
@@ -192,12 +220,12 @@ pub const VM = struct {
         return self.chunk.?.constants.items[offset];
     }
 
-    fn runtime_error(self: *Self, comptime message: []const u8) !void {
+    fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) !void {
         _ = self;
 
         const stderr = std.io.getStdErr().writer();
 
-        try stderr.print(message, .{});
+        try stderr.print(format, args);
     }
 
     fn concatenate(self: *Self) !void {

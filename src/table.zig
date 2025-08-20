@@ -33,7 +33,7 @@ pub const Table = struct {
     }
 
     pub fn deinit(self: Self) void {
-        self.deinit();
+        self.entries.deinit();
     }
 
     fn find_entry(entries: *std.ArrayList(Entry), key: *String) *Entry {
@@ -102,7 +102,7 @@ pub const Table = struct {
 
         const entry = find_entry(&self.entries, key);
 
-        const is_new = entry.key != null;
+        const is_new = entry.key == null;
         if (is_new) {
             self.count += 1;
         }
