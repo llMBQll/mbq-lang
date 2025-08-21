@@ -47,6 +47,9 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
         @intFromEnum(OpCode.NOT) => return try simple_instruction("OP_NOT", offset, stdout),
         @intFromEnum(OpCode.NEGATE) => return try simple_instruction("OP_NEGATE", offset, stdout),
         @intFromEnum(OpCode.PRINT) => return try simple_instruction("OP_PRINT", offset, stdout),
+        @intFromEnum(OpCode.JUMP) => return try jump_instruction("OP_JUMP", '+', chunk, offset, stdout),
+        @intFromEnum(OpCode.JUMP_IF_FALSE) => return try jump_instruction("OP_JUMP_IF_FALSE", '+', chunk, offset, stdout),
+        @intFromEnum(OpCode.LOOP) => return try jump_instruction("OP_LOOP", '-', chunk, offset, stdout),
         @intFromEnum(OpCode.RETURN) => return try simple_instruction("OP_RETURN", offset, stdout),
         else => {
             try stdout.print("Unknown instruction [{d}]\n", .{instruction});
@@ -65,6 +68,20 @@ fn byte_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdou
 
     try stdout.print("{s:<16} {d:4}\n", .{ name, slot });
     return offset + 2;
+}
+
+fn jump_instruction(name: []const u8, comptime sign: u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+    const high: u16 = chunk.code.items[offset + 1];
+    const low: u16 = chunk.code.items[offset + 2];
+    const jump = (high << 8) + low;
+    const dest = switch (sign) {
+        '+' => offset + 3 + jump,
+        '-' => offset + 3 - jump,
+        else => @compileError("Unsupported sign"),
+    };
+
+    try stdout.print("{s:<16} {d:4} -> {d}\n", .{ name, offset, dest });
+    return offset + 3;
 }
 
 fn constant_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {

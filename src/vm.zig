@@ -211,6 +211,20 @@ pub const VM = struct {
                     try self.stack.pop().?.print(stdout);
                     try stdout.print("\n", .{});
                 },
+                OpCode.JUMP => {
+                    const offset = self.read_short();
+                    self.ip += offset;
+                },
+                OpCode.JUMP_IF_FALSE => {
+                    const offset = self.read_short();
+                    if (self.stack.peek(0).falsey()) {
+                        self.ip += offset;
+                    }
+                },
+                OpCode.LOOP => {
+                    const offset = self.read_short();
+                    self.ip -= offset;
+                },
                 OpCode.RETURN => {
                     return;
                 },
@@ -221,6 +235,14 @@ pub const VM = struct {
     fn read_byte(self: *Self) u8 {
         const instruction = self.chunk.?.code.items[self.ip];
         self.ip += 1;
+        return instruction;
+    }
+
+    fn read_short(self: *Self) u16 {
+        const high: u16 = self.chunk.?.code.items[self.ip];
+        const low: u16 = self.chunk.?.code.items[self.ip + 1];
+        self.ip += 2;
+        const instruction = (high << 8) + low;
         return instruction;
     }
 

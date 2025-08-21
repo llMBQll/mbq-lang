@@ -23,6 +23,9 @@ pub const OpCode = enum(u8) {
     DIVIDE,
     NOT,
     PRINT,
+    JUMP,
+    JUMP_IF_FALSE,
+    LOOP,
     RETURN,
 };
 
@@ -52,6 +55,7 @@ pub const Chunk = struct {
         const byte: u8 = switch (T) {
             u8 => val,
             u18, u32, u64, u128, usize => @truncate(val),
+            comptime_int => @truncate(val),
             OpCode => @intFromEnum(val),
             else => @compileError("Type must be an unsigned integer or chunks.OpCode, got " ++ @typeName(T)),
         };

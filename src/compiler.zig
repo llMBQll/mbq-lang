@@ -170,6 +170,24 @@ fn grouping(_: bool) !void {
     try consume(TokenType.RIGHT_PAREN, "Expect ')' after expression.");
 }
 
+fn @"and"(_: bool) !void {
+    const end_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
+    try emit_byte(OpCode.POP);
+    try parse_precedence(Precedence.AND);
+    try patch_jump(end_jump);
+}
+
+fn @"or"(_: bool) !void {
+    const else_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
+    const end_jump = try emit_jump(OpCode.JUMP);
+
+    try patch_jump(else_jump);
+    try emit_byte(OpCode.POP);
+
+    try parse_precedence(Precedence.OR);
+    try patch_jump(end_jump);
+}
+
 fn expression() !void {
     try parse_precedence(Precedence.ASSIGNMENT);
 }
@@ -219,7 +237,7 @@ fn mark_initialized() void {
 }
 
 fn declare_variable() !void {
-    if (current.scope_depth > 0) {
+    if (current.scope_depth == 0) {
         return;
     }
 
@@ -270,18 +288,141 @@ fn identifier_constant(name: *const Token) !u8 {
     return make_constant(.{ .object = @ptrCast(str) });
 }
 
-fn statement() !void {
+fn statement() anyerror!void {
     if (try match(TokenType.PRINT)) {
         try print_statement();
+    } else if (try match(TokenType.IF)) {
+        try if_statement();
+    } else if (try match(TokenType.WHILE)) {
+        try while_statement();
+    } else if (try match(TokenType.FOR)) {
+        try for_statement();
     } else if (try match(TokenType.LEFT_BRACE)) {
         begin_scope();
-
         try block();
-
         try end_scope();
     } else {
         try expression_statement();
     }
+}
+
+fn for_statement() !void {
+    begin_scope();
+
+    // Pre-loop
+    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'for'.");
+    if (try match(TokenType.SEMICOLON)) {
+        // No initializer.
+    } else if (try match(TokenType.VAR)) {
+        try var_declaration();
+    } else {
+        try expression_statement();
+    }
+
+    // Condition
+    var loop_start = current_chunk().code.items.len;
+
+    var exit_jump: ?usize = null;
+    if (!try match(TokenType.SEMICOLON)) {
+        try expression();
+        try consume(TokenType.SEMICOLON, "Expect ';' after loop condition.");
+
+        exit_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
+        try emit_byte(OpCode.POP);
+    }
+
+    // Post-loop
+    if (!try match(TokenType.RIGHT_PAREN)) {
+        const body_jump = try emit_jump(OpCode.JUMP);
+        const post_loop_start = current_chunk().code.items.len;
+        try expression();
+        try emit_byte(OpCode.POP);
+        try consume(TokenType.RIGHT_PAREN, "Expect ')' after for clauses.");
+
+        try emit_loop(loop_start);
+        loop_start = post_loop_start;
+        try patch_jump(body_jump);
+    }
+
+    // Loop body
+    try statement();
+    try emit_loop(loop_start);
+
+    if (exit_jump) |jump| {
+        try patch_jump(jump);
+        try emit_byte(OpCode.POP);
+    }
+
+    try end_scope();
+}
+
+fn while_statement() !void {
+    const loop_start = current_chunk().code.items.len;
+    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'while'.");
+    try expression();
+    try consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
+
+    const exit_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
+    try emit_byte(OpCode.POP);
+    try statement();
+    try emit_loop(loop_start);
+
+    try patch_jump(exit_jump);
+    try emit_byte(OpCode.POP);
+}
+
+fn emit_loop(loop_start: usize) !void {
+    try emit_byte(OpCode.LOOP);
+
+    const offset = current_chunk().code.items.len - loop_start + 2;
+    if (offset > std.math.maxInt(u16)) {
+        try err("Loop body too large.");
+    }
+
+    const high: u8 = @truncate(offset >> 8);
+    const low: u8 = @truncate(offset);
+    try emit_byte(high);
+    try emit_byte(low);
+}
+
+fn if_statement() !void {
+    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'if'.");
+    try expression();
+    try consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
+
+    const then_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
+    try emit_byte(OpCode.POP);
+    try statement();
+
+    const else_jump = try emit_jump(OpCode.JUMP);
+
+    try patch_jump(then_jump);
+    try emit_byte(OpCode.POP);
+
+    if (try match(TokenType.ELSE)) {
+        try statement();
+    }
+
+    try patch_jump(else_jump);
+}
+
+fn emit_jump(instruction: OpCode) !usize {
+    try emit_byte(instruction);
+    try emit_byte(0xFF);
+    try emit_byte(0xFF);
+    return current_chunk().code.items.len - 2;
+}
+
+fn patch_jump(offset: usize) !void {
+    // -2 to adjust for the bytecode for the jump offset itself.
+    const jump = current_chunk().code.items.len - offset - 2;
+
+    if (jump > std.math.maxInt(u16)) {
+        try err("Too much code to jump over.");
+    }
+
+    current_chunk().code.items[offset] = @truncate(jump >> 8);
+    current_chunk().code.items[offset + 1] = @truncate(jump);
 }
 
 fn begin_scope() void {
@@ -440,7 +581,7 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.IDENTIFIER, variable, null, Precedence.NONE },
     .{ TokenType.STRING, string, null, Precedence.NONE },
     .{ TokenType.NUMBER, number, null, Precedence.NONE },
-    .{ TokenType.AND, null, null, Precedence.NONE },
+    .{ TokenType.AND, null, @"and", Precedence.AND },
     .{ TokenType.CLASS, null, null, Precedence.NONE },
     .{ TokenType.ELSE, null, null, Precedence.NONE },
     .{ TokenType.FALSE, literal, null, Precedence.NONE },
@@ -448,7 +589,7 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.FN, null, null, Precedence.NONE },
     .{ TokenType.IF, null, null, Precedence.NONE },
     .{ TokenType.NIL, literal, null, Precedence.NONE },
-    .{ TokenType.OR, null, null, Precedence.NONE },
+    .{ TokenType.OR, null, @"or", Precedence.OR },
     .{ TokenType.PRINT, null, null, Precedence.NONE },
     .{ TokenType.RETURN, null, null, Precedence.NONE },
     .{ TokenType.SUPER, null, null, Precedence.NONE },
