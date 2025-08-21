@@ -1,7 +1,8 @@
 const std = @import("std");
 
-const debug = @import("debug.zig");
 const chunks = @import("chunks.zig");
+const context = @import("context.zig");
+const debug = @import("debug.zig");
 const lexer_mod = @import("lexer.zig");
 const objects = @import("objects.zig");
 const values = @import("values.zig");
@@ -23,6 +24,7 @@ const Parser = struct {
     had_error: bool,
     panic_mode: bool,
     vm: *VM,
+    ctx: context.Context,
 };
 
 const Precedence = enum {
@@ -60,6 +62,7 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
         .had_error = false,
         .panic_mode = false,
         .vm = vm,
+        .ctx = vm.ctx,
     };
 
     lexer = Lexer.init(source);
@@ -341,7 +344,7 @@ fn end_compiler() !void {
 
     if (comptime DEBUG_TRACING) {
         if (!parser.had_error) {
-            try debug.disassemble_chunk(current_chunk(), "code");
+            try debug.disassemble_chunk(current_chunk(), "code", parser.ctx.stdout);
         }
     }
 }
@@ -426,7 +429,7 @@ fn error_at(token: Token, message: []const u8) !void {
     }
     parser.panic_mode = true;
 
-    const stderr = std.io.getStdErr().writer();
+    const stderr = parser.ctx.stderr;
 
     try stderr.print("[line {d}] Error", .{token.line});
 

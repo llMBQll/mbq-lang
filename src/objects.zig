@@ -18,9 +18,7 @@ pub const Obj = struct {
     obj_type: ObjType,
     next: ?*Obj,
 
-    pub fn print(self: *Self) !void {
-        const stdout = std.io.getStdOut().writer();
-
+    pub fn print(self: *Self, stdout: anytype) !void {
         switch (self.obj_type) {
             ObjType.STRING => {
                 const str: *String = @ptrCast(self);
@@ -50,7 +48,7 @@ pub fn copy_string(vm: *VM, chars_in: []const u8) !*String {
         return str;
     }
 
-    const chars = try vm.allocator.alloc(u8, chars_in.len);
+    const chars = try vm.ctx.allocator.alloc(u8, chars_in.len);
     std.mem.copyForwards(u8, chars, chars_in);
 
     return allocate_string(vm, chars, hash);
@@ -61,7 +59,7 @@ pub fn take_string(vm: *VM, chars: []const u8) !*String {
 
     const interned = vm.strings.find_string(chars, hash);
     if (interned) |str| {
-        vm.allocator.free(chars);
+        vm.ctx.allocator.free(chars);
         return str;
     }
 
@@ -79,7 +77,7 @@ fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
 }
 
 fn allocate(vm: *VM, comptime T: type) !*T {
-    const object = try vm.allocator.create(T);
+    const object = try vm.ctx.allocator.create(T);
 
     object.obj.obj_type = T.obj_type;
     object.obj.next = vm.obj_list;
@@ -92,8 +90,8 @@ pub fn deallocate(vm: *VM, obj: *Obj) void {
     switch (obj.obj_type) {
         ObjType.STRING => {
             const str: *String = @ptrCast(obj);
-            vm.allocator.free(str.chars);
-            vm.allocator.destroy(str);
+            vm.ctx.allocator.free(str.chars);
+            vm.ctx.allocator.destroy(str);
         },
     }
 }

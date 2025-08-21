@@ -29,14 +29,12 @@ pub const Value = union(ValueType) {
         }
     }
 
-    pub fn print(self: Self) !void {
-        const stdout = std.io.getStdOut().writer();
-
+    pub fn print(self: Self, stdout: anytype) !void {
         switch (self) {
             .nil => try stdout.print("nil", .{}),
             .bool => |v| try stdout.print("{}", .{v}),
             .number => |v| try stdout.print("{d}", .{v}),
-            .object => |v| try v.print(),
+            .object => |v| try v.print(stdout),
         }
     }
 

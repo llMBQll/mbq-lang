@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
+const context = @import("context.zig");
 const compiler = @import("compiler.zig");
 const debug = @import("debug.zig");
 const objects = @import("objects.zig");
@@ -29,20 +30,20 @@ pub const VM = struct {
     chunk: ?*Chunk,
     ip: usize,
     stack: Stack,
-    allocator: std.mem.Allocator,
     obj_list: ?*Obj,
     globals: Table,
     strings: Table,
+    ctx: context.Context,
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init(ctx: context.Context) !Self {
         return Self{
             .chunk = null,
             .ip = 0,
-            .stack = try Stack.init(allocator),
-            .allocator = allocator,
+            .stack = try Stack.init(ctx.allocator),
             .obj_list = null,
-            .globals = Table.init(allocator),
-            .strings = Table.init(allocator),
+            .globals = Table.init(ctx.allocator),
+            .strings = Table.init(ctx.allocator),
+            .ctx = ctx,
         };
     }
 
@@ -59,8 +60,8 @@ pub const VM = struct {
         }
     }
 
-    pub fn interpret(self: *Self, source: []const u8, allocator: std.mem.Allocator) !void {
-        var chunk = try chunks.Chunk.init(allocator);
+    pub fn interpret(self: *Self, source: []const u8) !void {
+        var chunk = try chunks.Chunk.init(self.ctx.allocator);
         defer chunk.deinit();
 
         const ok = try compiler.compile(self, source, &chunk);
@@ -75,7 +76,7 @@ pub const VM = struct {
     }
 
     fn run(self: *Self) !void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = self.ctx.stdout;
 
         while (true) {
             if (comptime DEBUG_TRACING) {
@@ -85,13 +86,13 @@ pub const VM = struct {
                 } else {
                     for (self.stack.data.items) |value| {
                         try stdout.print("[ ", .{});
-                        try value.print();
+                        try value.print(stdout);
                         try stdout.print(" ]", .{});
                     }
                 }
                 try stdout.print("\n", .{});
 
-                _ = try debug.disassemble_instruction(self.chunk.?, self.ip);
+                _ = try debug.disassemble_instruction(self.chunk.?, self.ip, stdout);
             }
 
             const instruction: OpCode = @enumFromInt(self.read_byte());
@@ -199,7 +200,7 @@ pub const VM = struct {
                     try self.stack.push(.{ .bool = self.stack.pop().?.falsey() });
                 },
                 OpCode.PRINT => {
-                    try self.stack.pop().?.print();
+                    try self.stack.pop().?.print(stdout);
                     try stdout.print("\n", .{});
                 },
                 OpCode.RETURN => {
@@ -221,9 +222,7 @@ pub const VM = struct {
     }
 
     fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) !void {
-        _ = self;
-
-        const stderr = std.io.getStdErr().writer();
+        const stderr = self.ctx.stderr;
 
         try stderr.print(format, args);
     }
@@ -233,7 +232,7 @@ pub const VM = struct {
         const a: *String = @ptrCast(self.stack.pop().?.object);
 
         const len = a.chars.len + b.chars.len;
-        const chars = try self.allocator.alloc(u8, len);
+        const chars = try self.ctx.allocator.alloc(u8, len);
 
         std.mem.copyForwards(u8, chars[0..a.chars.len], a.chars);
         std.mem.copyForwards(u8, chars[a.chars.len..len], b.chars);
