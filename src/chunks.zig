@@ -8,6 +8,8 @@ pub const OpCode = enum(u8) {
     TRUE,
     FALSE,
     POP,
+    GET_LOCAL,
+    SET_LOCAL,
     GET_GLOBAL,
     DEFINE_GLOBAL,
     SET_GLOBAL,

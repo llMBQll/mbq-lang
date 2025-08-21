@@ -105,6 +105,14 @@ pub const VM = struct {
                 OpCode.TRUE => try self.stack.push(.{ .bool = true }),
                 OpCode.FALSE => try self.stack.push(.{ .bool = false }),
                 OpCode.POP => _ = self.stack.pop(),
+                OpCode.GET_LOCAL => {
+                    const slot = self.read_byte();
+                    try self.stack.push(self.stack.data.items[slot]);
+                },
+                OpCode.SET_LOCAL => {
+                    const slot = self.read_byte();
+                    self.stack.data.items[slot] = self.stack.peek(0).*;
+                },
                 OpCode.GET_GLOBAL => {
                     const name: *String = @ptrCast(self.read_constant().object);
                     if (self.globals.get(name)) |value| {

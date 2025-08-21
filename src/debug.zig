@@ -32,6 +32,8 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
         @intFromEnum(OpCode.TRUE) => return try simple_instruction("OP_TRUE", offset, stdout),
         @intFromEnum(OpCode.FALSE) => return try simple_instruction("OP_FALSE", offset, stdout),
         @intFromEnum(OpCode.POP) => return try simple_instruction("OP_POP", offset, stdout),
+        @intFromEnum(OpCode.GET_LOCAL) => return try byte_instruction("OP_GET_LOCAL", chunk, offset, stdout),
+        @intFromEnum(OpCode.SET_LOCAL) => return try byte_instruction("OP_SET_LOCAL", chunk, offset, stdout),
         @intFromEnum(OpCode.GET_GLOBAL) => return try constant_instruction("OP_GET_GLOBAL", chunk, offset, stdout),
         @intFromEnum(OpCode.DEFINE_GLOBAL) => return try constant_instruction("OP_DEFINE_GLOBAL", chunk, offset, stdout),
         @intFromEnum(OpCode.SET_GLOBAL) => return try constant_instruction("OP_SET_GLOBAL", chunk, offset, stdout),
@@ -56,6 +58,13 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
 fn simple_instruction(name: []const u8, offset: usize, stdout: anytype) !usize {
     try stdout.print("{s}\n", .{name});
     return offset + 1;
+}
+
+fn byte_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+    const slot = chunk.code.items[offset + 1];
+
+    try stdout.print("{s:<16} {d:4}\n", .{ name, slot });
+    return offset + 2;
 }
 
 fn constant_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {

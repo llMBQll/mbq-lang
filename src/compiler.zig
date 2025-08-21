@@ -27,6 +27,19 @@ const Parser = struct {
     ctx: context.Context,
 };
 
+const Compiler = struct {
+    const MAx_LOCAL_COUNT = std.math.maxInt(u8) + 1;
+
+    locals: [MAx_LOCAL_COUNT]Local,
+    local_count: u32,
+    scope_depth: i32,
+};
+
+const Local = struct {
+    name: Token,
+    depth: i32,
+};
+
 const Precedence = enum {
     NONE,
     ASSIGNMENT, // =
@@ -52,6 +65,7 @@ const ParseRule = struct {
 var lexer: Lexer = undefined;
 var parser: Parser = undefined;
 var compiling_chunk: *Chunk = undefined;
+var current: *Compiler = undefined;
 
 pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
     defer end_compiler() catch {};
@@ -64,6 +78,13 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
         .vm = vm,
         .ctx = vm.ctx,
     };
+
+    var compiler = Compiler{
+        .locals = undefined,
+        .local_count = 0,
+        .scope_depth = 0,
+    };
+    current = &compiler;
 
     lexer = Lexer.init(source);
     defer lexer.deinit();
@@ -159,7 +180,7 @@ fn expression_statement() !void {
     try emit_byte(OpCode.POP);
 }
 
-fn declaration() !void {
+fn declaration() anyerror!void { // 'unable to resolve inferred error set' without `anyerror` - TODO look into that
     if (try match(TokenType.VAR)) {
         try var_declaration();
     } else {
@@ -185,11 +206,62 @@ fn var_declaration() !void {
 }
 
 fn define_variable(global: u8) !void {
+    if (current.scope_depth > 0) {
+        mark_initialized();
+        return;
+    }
+
     try emit_bytes(OpCode.DEFINE_GLOBAL, global);
+}
+
+fn mark_initialized() void {
+    current.locals[current.local_count - 1].depth = current.scope_depth;
+}
+
+fn declare_variable() !void {
+    if (current.scope_depth > 0) {
+        return;
+    }
+
+    const name = &parser.previous;
+
+    var i = current.local_count;
+    while (i > 0) {
+        i -= 1;
+        const local = &current.locals[i];
+        if (local.depth != -1 and local.depth < current.scope_depth) {
+            break;
+        }
+
+        if (std.mem.eql(u8, name.token, local.name.token)) {
+            try err("Already a variable with this name in this scope.");
+        }
+    }
+
+    try add_local(name);
+}
+
+fn add_local(name: *Token) !void {
+    if (current.local_count == Compiler.MAx_LOCAL_COUNT) {
+        try err("Too many local variables in function.");
+        return;
+    }
+
+    const local = &current.locals[current.local_count];
+    current.local_count += 1;
+
+    local.name = name.*;
+    local.depth = -1;
 }
 
 fn parse_variable(comptime error_message: []const u8) !u8 {
     try consume(TokenType.IDENTIFIER, error_message);
+
+    try declare_variable();
+    if (current.scope_depth > 0) {
+        return 0;
+    }
+
     return try identifier_constant(&parser.previous);
 }
 
@@ -201,9 +273,36 @@ fn identifier_constant(name: *const Token) !u8 {
 fn statement() !void {
     if (try match(TokenType.PRINT)) {
         try print_statement();
+    } else if (try match(TokenType.LEFT_BRACE)) {
+        begin_scope();
+
+        try block();
+
+        try end_scope();
     } else {
         try expression_statement();
     }
+}
+
+fn begin_scope() void {
+    current.scope_depth += 1;
+}
+
+fn end_scope() !void {
+    current.scope_depth -= 1;
+
+    while (current.local_count > 0 and current.locals[current.local_count - 1].depth > current.scope_depth) {
+        try emit_byte(OpCode.POP);
+        current.local_count -= 1;
+    }
+}
+
+fn block() !void {
+    while (!check(TokenType.RIGHT_BRACE) and !check(TokenType.EOF)) {
+        try declaration();
+    }
+
+    try consume(TokenType.RIGHT_BRACE, "Expect '}' after block.");
 }
 
 fn print_statement() !void {
@@ -258,14 +357,36 @@ fn variable(can_assign: bool) !void {
 }
 
 fn named_variable(name: *const Token, can_assign: bool) !void {
-    const arg = try identifier_constant(name);
+    const maybe_local = try resolve_local(current, name);
+
+    const arg, const get, const set = if (maybe_local) |local| blk: {
+        break :blk .{ local, OpCode.GET_LOCAL, OpCode.SET_LOCAL };
+    } else blk: {
+        const global = try identifier_constant(name);
+        break :blk .{ global, OpCode.GET_GLOBAL, OpCode.SET_GLOBAL };
+    };
 
     if (can_assign and try match(TokenType.EQUAL)) {
         try expression();
-        try emit_bytes(OpCode.SET_GLOBAL, arg);
+        try emit_bytes(set, arg);
     } else {
-        try emit_bytes(OpCode.GET_GLOBAL, arg);
+        try emit_bytes(get, arg);
     }
+}
+
+fn resolve_local(compiler: *Compiler, name: *const Token) !?u8 {
+    var i = compiler.local_count;
+    while (i > 0) {
+        i -= 1;
+        const local = &compiler.locals[i];
+        if (std.mem.eql(u8, name.token, local.name.token)) {
+            if (local.depth == -1) {
+                try err("Can't read local variable in its own initializer.");
+            }
+            return @truncate(i);
+        }
+    }
+    return null;
 }
 
 fn get_rule(token_type: TokenType) *const ParseRule {
