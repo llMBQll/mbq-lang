@@ -32,12 +32,12 @@ const Compiler = struct {
 
     locals: [MAx_LOCAL_COUNT]Local,
     local_count: u32,
-    scope_depth: i32,
+    scope_depth: u32,
 };
 
 const Local = struct {
     name: Token,
-    depth: i32,
+    depth: ?u32,
 };
 
 const Precedence = enum {
@@ -247,7 +247,7 @@ fn declare_variable() !void {
     while (i > 0) {
         i -= 1;
         const local = &current.locals[i];
-        if (local.depth != -1 and local.depth < current.scope_depth) {
+        if (local.depth != null and local.depth.? < current.scope_depth) {
             break;
         }
 
@@ -269,7 +269,7 @@ fn add_local(name: *Token) !void {
     current.local_count += 1;
 
     local.name = name.*;
-    local.depth = -1;
+    local.depth = null;
 }
 
 fn parse_variable(comptime error_message: []const u8) !u8 {
@@ -432,7 +432,12 @@ fn begin_scope() void {
 fn end_scope() !void {
     current.scope_depth -= 1;
 
-    while (current.local_count > 0 and current.locals[current.local_count - 1].depth > current.scope_depth) {
+    while (current.local_count > 0) {
+        const depth = current.locals[current.local_count - 1].depth;
+        if (depth == null or depth.? <= current.scope_depth) {
+            break;
+        }
+
         try emit_byte(OpCode.POP);
         current.local_count -= 1;
     }
@@ -521,7 +526,7 @@ fn resolve_local(compiler: *Compiler, name: *const Token) !?u8 {
         i -= 1;
         const local = &compiler.locals[i];
         if (std.mem.eql(u8, name.token, local.name.token)) {
-            if (local.depth == -1) {
+            if (local.depth == null) {
                 try err("Can't read local variable in its own initializer.");
             }
             return @truncate(i);
