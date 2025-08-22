@@ -12,6 +12,7 @@ const DEBUG_TRACING = true;
 
 const Chunk = chunks.Chunk;
 const Lexer = lexer_mod.Lexer;
+const Function = objects.Function;
 const OpCode = chunks.OpCode;
 const Token = lexer_mod.Token;
 const TokenType = lexer_mod.TokenType;
@@ -30,9 +31,18 @@ const Parser = struct {
 const Compiler = struct {
     const MAx_LOCAL_COUNT = std.math.maxInt(u8) + 1;
 
+    enclosing: *Compiler,
+    function: *Function,
+    fn_type: FnType,
+
     locals: [MAx_LOCAL_COUNT]Local,
     local_count: u32,
     scope_depth: u32,
+};
+
+const FnType = enum {
+    FUNCTION,
+    SCRIPT,
 };
 
 const Local = struct {
@@ -64,12 +74,9 @@ const ParseRule = struct {
 
 var lexer: Lexer = undefined;
 var parser: Parser = undefined;
-var compiling_chunk: *Chunk = undefined;
 var current: *Compiler = undefined;
 
-pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
-    defer end_compiler() catch {};
-
+pub fn compile(vm: *VM, source: []const u8) !?*Function {
     parser = .{
         .current = undefined,
         .previous = undefined,
@@ -79,17 +86,11 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
         .ctx = vm.ctx,
     };
 
-    var compiler = Compiler{
-        .locals = undefined,
-        .local_count = 0,
-        .scope_depth = 0,
-    };
-    current = &compiler;
+    var compiler: Compiler = undefined;
+    try init_compiler(&compiler, vm, FnType.SCRIPT);
 
     lexer = Lexer.init(source);
     defer lexer.deinit();
-
-    compiling_chunk = chunk;
 
     try advance();
 
@@ -99,7 +100,46 @@ pub fn compile(vm: *VM, source: []const u8, chunk: *Chunk) !bool {
 
     try consume(TokenType.EOF, "Expected end of expression.");
 
-    return !parser.had_error;
+    const func = try end_compiler();
+    return if (parser.had_error) null else func;
+}
+
+fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType) !void {
+    compiler.enclosing = current;
+    compiler.function = try objects.new_function(vm);
+    compiler.fn_type = fn_type;
+    compiler.local_count = 0;
+    compiler.scope_depth = 0;
+
+    const local = &compiler.locals[compiler.local_count];
+    compiler.local_count += 1;
+    local.depth = 0;
+    local.name.token = "";
+
+    if (fn_type != FnType.SCRIPT) {
+        compiler.function.name = try objects.copy_string(vm, parser.previous.token);
+    }
+
+    current = compiler;
+}
+
+fn end_compiler() !*Function {
+    try emit_return();
+    const func = current.function;
+
+    if (comptime DEBUG_TRACING) {
+        if (!parser.had_error) {
+            try debug.disassemble_chunk(
+                current_chunk(),
+                if (func.name) |name| name.chars else "<script>",
+                parser.ctx.stdout,
+            );
+        }
+    }
+
+    current = current.enclosing;
+
+    return func;
 }
 
 fn parse_precedence(precedence: Precedence) !void {
@@ -170,6 +210,31 @@ fn grouping(_: bool) !void {
     try consume(TokenType.RIGHT_PAREN, "Expect ')' after expression.");
 }
 
+fn call(_: bool) !void {
+    const arg_count = try argument_list();
+    try emit_bytes(OpCode.CALL, arg_count);
+}
+
+fn argument_list() !u8 {
+    var arg_count: u8 = 0;
+    if (!check(TokenType.RIGHT_PAREN)) {
+        while (true) {
+            try expression();
+
+            if (arg_count == 255) {
+                try err("Can't have more than 255 arguments.");
+            }
+            arg_count += 1;
+
+            if (!try match(TokenType.COMMA)) {
+                break;
+            }
+        }
+    }
+    try consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+    return arg_count;
+}
+
 fn @"and"(_: bool) !void {
     const end_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
     try emit_byte(OpCode.POP);
@@ -199,7 +264,9 @@ fn expression_statement() !void {
 }
 
 fn declaration() anyerror!void { // 'unable to resolve inferred error set' without `anyerror` - TODO look into that
-    if (try match(TokenType.VAR)) {
+    if (try match(TokenType.FN)) {
+        try fn_declaration();
+    } else if (try match(TokenType.VAR)) {
         try var_declaration();
     } else {
         try statement();
@@ -208,6 +275,47 @@ fn declaration() anyerror!void { // 'unable to resolve inferred error set' witho
     if (parser.panic_mode) {
         try synchronize();
     }
+}
+
+fn fn_declaration() !void {
+    const global = try parse_variable("Expect function name.");
+    mark_initialized();
+    try function(FnType.FUNCTION);
+    try define_variable(global);
+}
+
+fn function(fn_type: FnType) !void {
+    var compiler: Compiler = undefined;
+    try init_compiler(&compiler, parser.vm, fn_type);
+    begin_scope();
+
+    try consume(TokenType.LEFT_PAREN, "Expect '(' after function name.");
+
+    if (!check(TokenType.RIGHT_PAREN)) {
+        while (true) {
+            current.function.arity += 1;
+            if (current.function.arity > 255) {
+                try error_at_current("Can't have more than 255 parameters");
+            }
+            const constant = try parse_variable("Expect parameter name.");
+            try define_variable(constant);
+
+            if (!try match(TokenType.COMMA)) {
+                break;
+            }
+        }
+    }
+
+    try consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.");
+    try consume(TokenType.LEFT_BRACE, "Expect '{' before function body.");
+    try block();
+
+    // end_scope not required, as the compiler is ended in the next line anyways
+    // try end_scope();
+
+    const func = try end_compiler();
+    const arg = try make_constant(.{ .object = @ptrCast(func) });
+    try emit_bytes(OpCode.CONSTANT, arg);
 }
 
 fn var_declaration() !void {
@@ -233,6 +341,9 @@ fn define_variable(global: u8) !void {
 }
 
 fn mark_initialized() void {
+    if (current.scope_depth == 0) {
+        return;
+    }
     current.locals[current.local_count - 1].depth = current.scope_depth;
 }
 
@@ -293,6 +404,8 @@ fn statement() anyerror!void {
         try print_statement();
     } else if (try match(TokenType.IF)) {
         try if_statement();
+    } else if (try match(TokenType.RETURN)) {
+        try return_statement();
     } else if (try match(TokenType.WHILE)) {
         try while_statement();
     } else if (try match(TokenType.FOR)) {
@@ -303,6 +416,20 @@ fn statement() anyerror!void {
         try end_scope();
     } else {
         try expression_statement();
+    }
+}
+
+fn return_statement() !void {
+    if (current.fn_type == FnType.SCRIPT) {
+        try err("Can't return from top-level code.");
+    }
+
+    if (try match(TokenType.SEMICOLON)) {
+        try emit_return();
+    } else {
+        try expression();
+        try consume(TokenType.SEMICOLON, "Expect ';' after return value.");
+        try emit_byte(OpCode.RETURN);
     }
 }
 
@@ -564,7 +691,7 @@ fn make_parse_rule_table(input_table: [rule_count]struct { TokenType, ?ParseFn, 
 }
 
 const rules = make_parse_rule_table(.{
-    .{ TokenType.LEFT_PAREN, grouping, null, Precedence.NONE },
+    .{ TokenType.LEFT_PAREN, grouping, call, Precedence.CALL },
     .{ TokenType.RIGHT_PAREN, null, null, Precedence.NONE },
     .{ TokenType.LEFT_BRACE, null, null, Precedence.NONE },
     .{ TokenType.RIGHT_BRACE, null, null, Precedence.NONE },
@@ -606,18 +733,8 @@ const rules = make_parse_rule_table(.{
     .{ TokenType.EOF, null, null, Precedence.NONE },
 });
 
-fn end_compiler() !void {
-    try emit_return();
-
-    if (comptime DEBUG_TRACING) {
-        if (!parser.had_error) {
-            try debug.disassemble_chunk(current_chunk(), "code", parser.ctx.stdout);
-        }
-    }
-}
-
 fn current_chunk() *Chunk {
-    return compiling_chunk;
+    return &current.function.chunk;
 }
 
 fn emit_byte(byte: anytype) !void {
@@ -630,6 +747,7 @@ fn emit_bytes(byte1: anytype, byte2: anytype) !void {
 }
 
 fn emit_return() !void {
+    try emit_byte(OpCode.NIL);
     try emit_byte(OpCode.RETURN);
 }
 

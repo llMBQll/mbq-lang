@@ -11,15 +11,19 @@ const values = @import("values.zig");
 const Chunk = chunks.Chunk;
 const Obj = objects.Obj;
 const ObjType = objects.ObjType;
+const Function = objects.Function;
+const Native = objects.Native;
+const NativeFn = objects.NativeFn;
 const OpCode = chunks.OpCode;
 const String = objects.String;
 const Table = table.Table;
 const Value = values.Value;
 const ValueType = values.ValueType;
 
-const DEBUG_TRACING = true;
+const DEBUG_TRACING = false;
 
-const STACK_MAX = 256;
+const FRAMES_MAX = 64;
+const STACK_MAX = FRAMES_MAX * std.math.maxInt(u8);
 
 pub const InterpretError = error{
     COMPILE_ERROR,
@@ -29,24 +33,28 @@ pub const InterpretError = error{
 pub const VM = struct {
     const Self = @This();
 
-    chunk: ?*Chunk,
-    ip: usize,
+    frames: FixedStack(CallFrame, FRAMES_MAX),
     stack: FixedStack(Value, STACK_MAX),
+    chunk: ?*Chunk,
     obj_list: ?*Obj,
     globals: Table,
     strings: Table,
     ctx: context.Context,
 
     pub fn init(ctx: context.Context) !Self {
-        return Self{
-            .chunk = null,
-            .ip = 0,
+        var self = Self{
+            .frames = FixedStack(CallFrame, FRAMES_MAX).init(),
             .stack = FixedStack(Value, STACK_MAX).init(),
+            .chunk = null,
             .obj_list = null,
             .globals = Table.init(ctx.allocator),
             .strings = Table.init(ctx.allocator),
             .ctx = ctx,
         };
+
+        try self.define_native("clock", clock_native);
+
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -62,22 +70,22 @@ pub const VM = struct {
     }
 
     pub fn interpret(self: *Self, source: []const u8) !void {
-        var chunk = try chunks.Chunk.init(self.ctx.allocator);
-        defer chunk.deinit();
+        const func = try compiler.compile(self, source);
+        if (func) |function| {
+            self.stack.push(.{ .object = @ptrCast(function) });
 
-        const ok = try compiler.compile(self, source, &chunk);
-        if (!ok) {
+            _ = try self.call(function, 0);
+
+            return self.run();
+        } else {
             return InterpretError.COMPILE_ERROR;
         }
-
-        self.chunk = &chunk;
-        self.ip = 0;
-
-        return self.run();
     }
 
     fn run(self: *Self) !void {
         const stdout = self.ctx.stdout;
+
+        var frame = self.frames.top();
 
         while (true) {
             if (comptime DEBUG_TRACING) {
@@ -93,13 +101,13 @@ pub const VM = struct {
                 }
                 try stdout.print("\n", .{});
 
-                _ = try debug.disassemble_instruction(self.chunk.?, self.ip, stdout);
+                _ = try debug.disassemble_instruction(&frame.function.chunk, frame.ip, stdout);
             }
 
-            const instruction: OpCode = @enumFromInt(self.read_byte());
+            const instruction: OpCode = @enumFromInt(read_byte(frame));
             switch (instruction) {
                 OpCode.CONSTANT => {
-                    const constant = read_constant(self);
+                    const constant = read_constant(frame);
                     self.stack.push(constant);
                 },
                 OpCode.NIL => self.stack.push(.nil),
@@ -107,15 +115,15 @@ pub const VM = struct {
                 OpCode.FALSE => self.stack.push(.{ .bool = false }),
                 OpCode.POP => _ = self.stack.pop(),
                 OpCode.GET_LOCAL => {
-                    const slot = self.read_byte();
-                    self.stack.push(self.stack.items[slot]);
+                    const slot = read_byte(frame);
+                    self.stack.push(frame.slots[slot]);
                 },
                 OpCode.SET_LOCAL => {
-                    const slot = self.read_byte();
-                    self.stack.items[slot] = self.stack.peek(0).*;
+                    const slot = read_byte(frame);
+                    frame.slots[slot] = self.stack.peek(0).*;
                 },
                 OpCode.GET_GLOBAL => {
-                    const name: *String = @ptrCast(self.read_constant().object);
+                    const name: *String = @ptrCast(read_constant(frame).object);
                     if (self.globals.get(name)) |value| {
                         self.stack.push(value);
                     } else {
@@ -124,11 +132,11 @@ pub const VM = struct {
                     }
                 },
                 OpCode.DEFINE_GLOBAL => {
-                    const name: *String = @ptrCast(self.read_constant().object);
+                    const name: *String = @ptrCast(read_constant(frame).object);
                     _ = try self.globals.set(name, self.stack.pop());
                 },
                 OpCode.SET_GLOBAL => {
-                    const name: *String = @ptrCast(self.read_constant().object);
+                    const name: *String = @ptrCast(read_constant(frame).object);
                     const is_new = try self.globals.set(name, self.stack.peek(0).*);
                     if (is_new) {
                         _ = self.globals.delete(name);
@@ -213,49 +221,83 @@ pub const VM = struct {
                     try stdout.print("\n", .{});
                 },
                 OpCode.JUMP => {
-                    const offset = self.read_short();
-                    self.ip += offset;
+                    const offset = read_short(frame);
+                    frame.ip += offset;
                 },
                 OpCode.JUMP_IF_FALSE => {
-                    const offset = self.read_short();
+                    const offset = read_short(frame);
                     if (self.stack.peek(0).falsey()) {
-                        self.ip += offset;
+                        frame.ip += offset;
                     }
                 },
                 OpCode.LOOP => {
-                    const offset = self.read_short();
-                    self.ip -= offset;
+                    const offset = read_short(frame);
+                    frame.ip -= offset;
+                },
+                OpCode.CALL => {
+                    const arg_count = read_byte(frame);
+                    if (!try self.call_value(self.stack.peek(arg_count).*, arg_count)) {
+                        return InterpretError.RUNTIME_ERROR;
+                    }
+                    frame = self.frames.top();
                 },
                 OpCode.RETURN => {
-                    return;
+                    const result = self.stack.pop();
+                    _ = self.frames.pop();
+                    if (self.frames.len == 0) {
+                        _ = self.stack.pop();
+                        return;
+                    }
+
+                    // Restore stack to the value before current function call
+                    self.stack.len = @TypeOf(self.stack).N - frame.slots.len;
+                    self.stack.push(result);
+                    frame = self.frames.top();
                 },
             }
         }
     }
 
-    fn read_byte(self: *Self) u8 {
-        const instruction = self.chunk.?.code.items[self.ip];
-        self.ip += 1;
+    fn read_byte(frame: *CallFrame) u8 {
+        const instruction: u8 = frame.function.chunk.code.items[frame.ip];
+        frame.ip += 1;
         return instruction;
     }
 
-    fn read_short(self: *Self) u16 {
-        const high: u16 = self.chunk.?.code.items[self.ip];
-        const low: u16 = self.chunk.?.code.items[self.ip + 1];
-        self.ip += 2;
+    fn read_short(frame: *CallFrame) u16 {
+        const high: u16 = read_byte(frame);
+        const low: u16 = read_byte(frame);
         const instruction = (high << 8) + low;
         return instruction;
     }
 
-    fn read_constant(self: *Self) Value {
-        const offset = self.read_byte();
-        return self.chunk.?.constants.items[offset];
+    fn read_constant(frame: *CallFrame) Value {
+        const offset = read_byte(frame);
+        return frame.function.chunk.constants.items[offset];
     }
 
     fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) !void {
         const stderr = self.ctx.stderr;
 
         try stderr.print(format, args);
+        try stderr.print("\n", .{});
+
+        var i = self.frames.len;
+        while (i > 0) {
+            i -= 1;
+
+            const frame = self.frames.items[i];
+            const function = frame.function;
+
+            try stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]});
+            if (function.name) |name| {
+                try stderr.print("{s}()\n", .{name.chars});
+            } else {
+                try stderr.print("script\n", .{});
+            }
+        }
+
+        self.stack.reset();
     }
 
     fn concatenate(self: *Self) !void {
@@ -271,9 +313,68 @@ pub const VM = struct {
         const str = try objects.take_string(self, chars);
         self.stack.push(.{ .object = @ptrCast(str) });
     }
+
+    fn define_native(self: *Self, name: []const u8, function: NativeFn) !void {
+        const str = try objects.copy_string(self, name);
+        const func = try objects.new_native(self, function);
+
+        self.stack.push(.{ .object = @ptrCast(str) });
+        self.stack.push(.{ .object = @ptrCast(func) });
+
+        _ = try self.globals.set(str, self.stack.peek(0).*);
+
+        _ = self.stack.pop();
+        _ = self.stack.pop();
+    }
+
+    fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
+        if (callee.tag() == ValueType.object) {
+            switch (callee.object.obj_type) {
+                ObjType.FUNCTION => return self.call(@ptrCast(callee.object), arg_count),
+                ObjType.NATIVE => {
+                    const native: *Native = @ptrCast(callee.object);
+                    const stack_top = self.stack.len;
+                    const result = native.function(self.stack.items[stack_top - arg_count .. stack_top]);
+                    self.stack.len -= arg_count + 1;
+                    self.stack.push(result);
+                    return true;
+                },
+                else => {},
+            }
+        }
+
+        try self.runtime_error("Can only call functions and classes.", .{});
+        return false;
+    }
+
+    fn call(self: *Self, function: *Function, arg_count: u8) !bool {
+        if (arg_count != function.arity) {
+            try self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count });
+            return false;
+        }
+
+        const frame = self.frames.push_new();
+        frame.function = function;
+        frame.ip = 0;
+        // Get a view to the stack that starts with all arguments and function call
+        frame.slots = self.stack.items[self.stack.len - arg_count - 1 .. @TypeOf(self.stack).N];
+        return true;
+    }
+};
+
+fn clock_native(_: []Value) Value {
+    return .{ .number = @floatFromInt(std.time.milliTimestamp()) };
+}
+
+const CallFrame = struct {
+    function: *Function,
+    ip: usize,
+    slots: []Value,
 };
 
 fn FixedStack(comptime value_type: type, comptime size: usize) type {
+    // TODO add error handling for stack overflow and removal on empty stack
+
     return struct {
         const Self = @This();
         const N = size;
@@ -292,6 +393,11 @@ fn FixedStack(comptime value_type: type, comptime size: usize) type {
         pub fn push(self: *Self, value: T) void {
             self.items[self.len] = value;
             self.len += 1;
+        }
+
+        pub fn push_new(self: *Self) *T {
+            self.len += 1;
+            return self.top();
         }
 
         pub fn pop(self: *Self) T {

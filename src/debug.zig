@@ -50,6 +50,7 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
         @intFromEnum(OpCode.JUMP) => return try jump_instruction("OP_JUMP", '+', chunk, offset, stdout),
         @intFromEnum(OpCode.JUMP_IF_FALSE) => return try jump_instruction("OP_JUMP_IF_FALSE", '+', chunk, offset, stdout),
         @intFromEnum(OpCode.LOOP) => return try jump_instruction("OP_LOOP", '-', chunk, offset, stdout),
+        @intFromEnum(OpCode.CALL) => return try byte_instruction("OP_CALL", chunk, offset, stdout),
         @intFromEnum(OpCode.RETURN) => return try simple_instruction("OP_RETURN", offset, stdout),
         else => {
             try stdout.print("Unknown instruction [{d}]\n", .{instruction});

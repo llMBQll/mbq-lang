@@ -1,14 +1,18 @@
 const std = @import("std");
 
+const chunks = @import("chunks.zig");
 const values = @import("values.zig");
 const vm_mod = @import("vm.zig");
 
 const Allocator = std.mem.Allocator;
+const Chunk = chunks.Chunk;
 const Value = values.Value;
 const ValueType = values.ValueType;
 const VM = vm_mod.VM;
 
 pub const ObjType = enum {
+    FUNCTION,
+    NATIVE,
     STRING,
 };
 
@@ -20,12 +24,44 @@ pub const Obj = struct {
 
     pub fn print(self: *Self, stdout: anytype) !void {
         switch (self.obj_type) {
+            ObjType.FUNCTION => {
+                const function: *Function = @ptrCast(self);
+
+                if (function.name) |name| {
+                    try stdout.print("fn <{s}>", .{name.chars});
+                } else {
+                    try stdout.print("<script>", .{});
+                }
+            },
+            ObjType.NATIVE => {
+                // const native: *Native = @ptrCast(self);
+
+                try stdout.print("<native fn>", .{});
+            },
             ObjType.STRING => {
                 const str: *String = @ptrCast(self);
                 try stdout.print("{s}", .{str.chars});
             },
         }
     }
+};
+
+pub const Function = struct {
+    const obj_type = ObjType.FUNCTION;
+
+    obj: Obj,
+    arity: usize,
+    chunk: Chunk,
+    name: ?*String,
+};
+
+pub const NativeFn = *const fn (args: []Value) Value;
+
+pub const Native = struct {
+    const obj_type = ObjType.NATIVE;
+
+    obj: Obj,
+    function: NativeFn,
 };
 
 pub const String = struct {
@@ -38,6 +74,20 @@ pub const String = struct {
 
 pub fn is(value: *Value, obj_type: ObjType) bool {
     return value.tag() == ValueType.object and value.object.obj_type == obj_type;
+}
+
+pub fn new_function(vm: *VM) !*Function {
+    const function = try allocate(vm, Function);
+    function.arity = 0;
+    function.chunk = try Chunk.init(vm.ctx.allocator);
+    function.name = null;
+    return function;
+}
+
+pub fn new_native(vm: *VM, function: NativeFn) !*Native {
+    const native = try allocate(vm, Native);
+    native.function = function;
+    return native;
 }
 
 pub fn copy_string(vm: *VM, chars_in: []const u8) !*String {
@@ -87,11 +137,22 @@ fn allocate(vm: *VM, comptime T: type) !*T {
 }
 
 pub fn deallocate(vm: *VM, obj: *Obj) void {
+    const allocator = vm.ctx.allocator;
+
     switch (obj.obj_type) {
+        ObjType.FUNCTION => {
+            const function: *Function = @ptrCast(obj);
+            function.chunk.deinit();
+            allocator.destroy(function);
+        },
+        ObjType.NATIVE => {
+            const native: *Native = @ptrCast(obj);
+            allocator.destroy(native);
+        },
         ObjType.STRING => {
             const str: *String = @ptrCast(obj);
-            vm.ctx.allocator.free(str.chars);
-            vm.ctx.allocator.destroy(str);
+            allocator.free(str.chars);
+            allocator.destroy(str);
         },
     }
 }
