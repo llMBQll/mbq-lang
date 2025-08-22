@@ -19,6 +19,8 @@ const ValueType = values.ValueType;
 
 const DEBUG_TRACING = true;
 
+const STACK_MAX = 256;
+
 pub const InterpretError = error{
     COMPILE_ERROR,
     RUNTIME_ERROR,
@@ -29,7 +31,7 @@ pub const VM = struct {
 
     chunk: ?*Chunk,
     ip: usize,
-    stack: Stack,
+    stack: FixedStack(Value, STACK_MAX),
     obj_list: ?*Obj,
     globals: Table,
     strings: Table,
@@ -39,7 +41,7 @@ pub const VM = struct {
         return Self{
             .chunk = null,
             .ip = 0,
-            .stack = try Stack.init(ctx.allocator),
+            .stack = FixedStack(Value, STACK_MAX).init(),
             .obj_list = null,
             .globals = Table.init(ctx.allocator),
             .strings = Table.init(ctx.allocator),
@@ -50,7 +52,6 @@ pub const VM = struct {
     pub fn deinit(self: *Self) void {
         self.globals.deinit();
         self.strings.deinit();
-        self.stack.deinit();
 
         var current = self.obj_list;
         while (current) |obj| {
@@ -81,12 +82,12 @@ pub const VM = struct {
         while (true) {
             if (comptime DEBUG_TRACING) {
                 try stdout.print("          ", .{});
-                if (self.stack.data.items.len == 0) {
+                if (self.stack.len == 0) {
                     try stdout.print("[ ]", .{});
                 } else {
-                    for (self.stack.data.items) |value| {
+                    for (0..self.stack.len) |i| {
                         try stdout.print("[ ", .{});
-                        try value.print(stdout);
+                        try self.stack.items[i].print(stdout);
                         try stdout.print(" ]", .{});
                     }
                 }
@@ -99,24 +100,24 @@ pub const VM = struct {
             switch (instruction) {
                 OpCode.CONSTANT => {
                     const constant = read_constant(self);
-                    try self.stack.push(constant);
+                    self.stack.push(constant);
                 },
-                OpCode.NIL => try self.stack.push(.nil),
-                OpCode.TRUE => try self.stack.push(.{ .bool = true }),
-                OpCode.FALSE => try self.stack.push(.{ .bool = false }),
+                OpCode.NIL => self.stack.push(.nil),
+                OpCode.TRUE => self.stack.push(.{ .bool = true }),
+                OpCode.FALSE => self.stack.push(.{ .bool = false }),
                 OpCode.POP => _ = self.stack.pop(),
                 OpCode.GET_LOCAL => {
                     const slot = self.read_byte();
-                    try self.stack.push(self.stack.data.items[slot]);
+                    self.stack.push(self.stack.items[slot]);
                 },
                 OpCode.SET_LOCAL => {
                     const slot = self.read_byte();
-                    self.stack.data.items[slot] = self.stack.peek(0).*;
+                    self.stack.items[slot] = self.stack.peek(0).*;
                 },
                 OpCode.GET_GLOBAL => {
                     const name: *String = @ptrCast(self.read_constant().object);
                     if (self.globals.get(name)) |value| {
-                        try self.stack.push(value);
+                        self.stack.push(value);
                     } else {
                         try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                         return InterpretError.RUNTIME_ERROR;
@@ -124,7 +125,7 @@ pub const VM = struct {
                 },
                 OpCode.DEFINE_GLOBAL => {
                     const name: *String = @ptrCast(self.read_constant().object);
-                    _ = try self.globals.set(name, self.stack.pop().?);
+                    _ = try self.globals.set(name, self.stack.pop());
                 },
                 OpCode.SET_GLOBAL => {
                     const name: *String = @ptrCast(self.read_constant().object);
@@ -136,42 +137,42 @@ pub const VM = struct {
                     }
                 },
                 OpCode.EQUAL => {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    try self.stack.push(.{ .bool = a.equals(b) });
+                    const b = self.stack.pop();
+                    const a = self.stack.pop();
+                    self.stack.push(.{ .bool = a.equals(b) });
                 },
                 OpCode.GREATER => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .bool = a > b });
+                    const b = self.stack.pop().number;
+                    const a = self.stack.pop().number;
+                    self.stack.push(.{ .bool = a > b });
                 },
                 OpCode.LESS => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .bool = a < b });
+                    const b = self.stack.pop().number;
+                    const a = self.stack.pop().number;
+                    self.stack.push(.{ .bool = a < b });
                 },
                 OpCode.NEGATE => {
                     if (self.stack.peek(0).tag() != ValueType.number) {
                         try self.runtime_error("Operand must be a number.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    try self.stack.push(.{ .number = -self.stack.pop().?.number });
+                    self.stack.push(.{ .number = -self.stack.pop().number });
                 },
                 OpCode.ADD => {
                     if (objects.is(self.stack.peek(0), ObjType.STRING) and objects.is(self.stack.peek(1), ObjType.STRING)) {
                         try self.concatenate();
                     } else if (self.stack.peek(0).tag() == ValueType.number and self.stack.peek(1).tag() == ValueType.number) {
-                        const b = self.stack.pop().?.number;
-                        const a = self.stack.pop().?.number;
-                        try self.stack.push(.{ .number = a + b });
+                        const b = self.stack.pop().number;
+                        const a = self.stack.pop().number;
+                        self.stack.push(.{ .number = a + b });
                     } else {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
@@ -182,33 +183,33 @@ pub const VM = struct {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .number = a - b });
+                    const b = self.stack.pop().number;
+                    const a = self.stack.pop().number;
+                    self.stack.push(.{ .number = a - b });
                 },
                 OpCode.MULTIPLY => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .number = a * b });
+                    const b = self.stack.pop().number;
+                    const a = self.stack.pop().number;
+                    self.stack.push(.{ .number = a * b });
                 },
                 OpCode.DIVIDE => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
                         try self.runtime_error("Operands must be numbers.", .{});
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    const b = self.stack.pop().?.number;
-                    const a = self.stack.pop().?.number;
-                    try self.stack.push(.{ .number = a / b });
+                    const b = self.stack.pop().number;
+                    const a = self.stack.pop().number;
+                    self.stack.push(.{ .number = a / b });
                 },
                 OpCode.NOT => {
-                    try self.stack.push(.{ .bool = self.stack.pop().?.falsey() });
+                    self.stack.push(.{ .bool = self.stack.pop().falsey() });
                 },
                 OpCode.PRINT => {
-                    try self.stack.pop().?.print(stdout);
+                    try self.stack.pop().print(stdout);
                     try stdout.print("\n", .{});
                 },
                 OpCode.JUMP => {
@@ -258,8 +259,8 @@ pub const VM = struct {
     }
 
     fn concatenate(self: *Self) !void {
-        const b: *String = @ptrCast(self.stack.pop().?.object);
-        const a: *String = @ptrCast(self.stack.pop().?.object);
+        const b: *String = @ptrCast(self.stack.pop().object);
+        const a: *String = @ptrCast(self.stack.pop().object);
 
         const len = a.chars.len + b.chars.len;
         const chars = try self.ctx.allocator.alloc(u8, len);
@@ -268,43 +269,46 @@ pub const VM = struct {
         std.mem.copyForwards(u8, chars[a.chars.len..len], b.chars);
 
         const str = try objects.take_string(self, chars);
-        try self.stack.push(.{ .object = @ptrCast(str) });
+        self.stack.push(.{ .object = @ptrCast(str) });
     }
 };
 
-const Stack = struct {
-    const Self = @This();
-    const DEFAULT_LENGTH = 256;
+fn FixedStack(comptime value_type: type, comptime size: usize) type {
+    return struct {
+        const Self = @This();
+        const N = size;
+        const T = value_type;
 
-    data: std.ArrayList(Value),
+        items: [N]T,
+        len: usize,
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        return Self{
-            .data = try std.ArrayList(Value).initCapacity(allocator, DEFAULT_LENGTH),
-        };
-    }
+        pub fn init() Self {
+            return .{
+                .items = undefined,
+                .len = 0,
+            };
+        }
 
-    pub fn deinit(self: Self) void {
-        self.data.deinit();
-    }
+        pub fn push(self: *Self, value: T) void {
+            self.items[self.len] = value;
+            self.len += 1;
+        }
 
-    pub fn push(self: *Self, value: Value) !void {
-        try self.data.append(value);
-    }
+        pub fn pop(self: *Self) T {
+            self.len -= 1;
+            return self.items[self.len];
+        }
 
-    pub fn pop(self: *Self) ?Value {
-        return self.data.pop();
-    }
+        pub fn top(self: *Self) *T {
+            return &self.items[self.len - 1];
+        }
 
-    pub fn top(self: *Self) !*Value {
-        return &self.data.items[self.data.items.len - 1];
-    }
+        pub fn peek(self: *Self, distance: usize) *T {
+            return &self.items[self.len - 1 - distance];
+        }
 
-    pub fn peek(self: *Self, distance: usize) *Value {
-        return &self.data.items[self.data.items.len - 1 - distance];
-    }
-
-    pub fn reset(self: *Self) !void {
-        try self.data.shrinkAndFree(DEFAULT_LENGTH);
-    }
-};
+        pub fn reset(self: *Self) void {
+            self.len = 0;
+        }
+    };
+}
