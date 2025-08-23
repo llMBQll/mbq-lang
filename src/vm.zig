@@ -26,12 +26,14 @@ const FRAMES_MAX = 64;
 const STACK_MAX = FRAMES_MAX * std.math.maxInt(u8);
 
 pub const InterpretError = error{
-    COMPILE_ERROR,
-    RUNTIME_ERROR,
+COMPILE_ERROR,
+RUNTIME_ERROR,
 };
 
 pub const VM = struct {
     const Self = @This();
+    const FrameStack = FixedStack(CallFrame, FRAMES_MAX);
+    const Stack = FixedStack(Value, STACK_MAX);
 
     frames: FixedStack(CallFrame, FRAMES_MAX),
     stack: FixedStack(Value, STACK_MAX),
@@ -72,7 +74,7 @@ pub const VM = struct {
     pub fn interpret(self: *Self, source: []const u8) !void {
         const func = try compiler.compile(self, source);
         if (func) |function| {
-            self.stack.push(.{ .object = @ptrCast(function) });
+            try self.stack_op(Stack.push, .{ &self.stack, Value{ .object = @ptrCast(function) } });
 
             _ = try self.call(function, 0);
 
@@ -85,7 +87,7 @@ pub const VM = struct {
     fn run(self: *Self) !void {
         const stdout = self.ctx.stdout;
 
-        var frame = self.frames.top();
+        var frame = try self.stack_op(FrameStack.top, .{&self.frames});
 
         while (true) {
             if (comptime DEBUG_TRACING) {
@@ -108,116 +110,108 @@ pub const VM = struct {
             switch (instruction) {
                 OpCode.CONSTANT => {
                     const constant = read_constant(frame);
-                    self.stack.push(constant);
+                    try self.stack_op(Stack.push, .{ &self.stack, constant });
                 },
-                OpCode.NIL => self.stack.push(.nil),
-                OpCode.TRUE => self.stack.push(.{ .bool = true }),
-                OpCode.FALSE => self.stack.push(.{ .bool = false }),
-                OpCode.POP => _ = self.stack.pop(),
+                OpCode.NIL => try self.stack_op(Stack.push, .{ &self.stack, .nil }),
+                OpCode.TRUE => try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = true } }),
+                OpCode.FALSE => try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = false } }),
+                OpCode.POP => _ = try self.stack_op(Stack.pop, .{&self.stack}),
                 OpCode.GET_LOCAL => {
                     const slot = read_byte(frame);
-                    self.stack.push(frame.slots[slot]);
+                    try self.stack_op(Stack.push, .{ &self.stack, frame.slots[slot] });
                 },
                 OpCode.SET_LOCAL => {
                     const slot = read_byte(frame);
-                    frame.slots[slot] = self.stack.peek(0).*;
+                    frame.slots[slot] = (try self.stack_op(Stack.peek, .{ &self.stack, 0 })).*;
                 },
                 OpCode.GET_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
                     if (self.globals.get(name)) |value| {
-                        self.stack.push(value);
+                        try self.stack_op(Stack.push, .{ &self.stack, value });
                     } else {
-                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                     }
                 },
                 OpCode.DEFINE_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    _ = try self.globals.set(name, self.stack.pop());
+                    _ = try self.globals.set(name, try self.stack_op(Stack.pop, .{&self.stack}));
                 },
                 OpCode.SET_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    const is_new = try self.globals.set(name, self.stack.peek(0).*);
+                    const is_new = try self.globals.set(name, (try self.stack_op(Stack.peek, .{ &self.stack, 0 })).*);
                     if (is_new) {
                         _ = self.globals.delete(name);
-                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                     }
                 },
                 OpCode.EQUAL => {
-                    const b = self.stack.pop();
-                    const a = self.stack.pop();
-                    self.stack.push(.{ .bool = a.equals(b) });
+                    const b = try self.stack_op(Stack.pop, .{&self.stack});
+                    const a = try self.stack_op(Stack.pop, .{&self.stack});
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = a.equals(b) } });
                 },
                 OpCode.GREATER => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number or (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
-                    const b = self.stack.pop().number;
-                    const a = self.stack.pop().number;
-                    self.stack.push(.{ .bool = a > b });
+                    const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = a > b } });
                 },
                 OpCode.LESS => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number or (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
-                    const b = self.stack.pop().number;
-                    const a = self.stack.pop().number;
-                    self.stack.push(.{ .bool = a < b });
+                    const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = a < b } });
                 },
                 OpCode.NEGATE => {
-                    if (self.stack.peek(0).tag() != ValueType.number) {
-                        try self.runtime_error("Operand must be a number.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operand must be a number.", .{});
                     }
-                    self.stack.push(.{ .number = -self.stack.pop().number });
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .number = -(try self.stack_op(Stack.pop, .{&self.stack})).number } });
                 },
                 OpCode.ADD => {
-                    if (objects.is(self.stack.peek(0), ObjType.STRING) and objects.is(self.stack.peek(1), ObjType.STRING)) {
+                    if (objects.is(try self.stack_op(Stack.peek, .{ &self.stack, 0 }), ObjType.STRING) and objects.is(try self.stack_op(Stack.peek, .{ &self.stack, 1 }), ObjType.STRING)) {
                         try self.concatenate();
-                    } else if (self.stack.peek(0).tag() == ValueType.number and self.stack.peek(1).tag() == ValueType.number) {
-                        const b = self.stack.pop().number;
-                        const a = self.stack.pop().number;
-                        self.stack.push(.{ .number = a + b });
+                    } else if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() == ValueType.number and (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() == ValueType.number) {
+                        const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                        const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                        try self.stack_op(Stack.push, .{ &self.stack, Value{ .number = a + b } });
                     } else {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                 },
                 OpCode.SUBTRACT => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number or (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
-                    const b = self.stack.pop().number;
-                    const a = self.stack.pop().number;
-                    self.stack.push(.{ .number = a - b });
+                    const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .number = a - b } });
                 },
                 OpCode.MULTIPLY => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number or (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
-                    const b = self.stack.pop().number;
-                    const a = self.stack.pop().number;
-                    self.stack.push(.{ .number = a * b });
+                    const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .number = a * b } });
                 },
                 OpCode.DIVIDE => {
-                    if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).tag() != ValueType.number or (try self.stack_op(Stack.peek, .{ &self.stack, 1 })).tag() != ValueType.number) {
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
-                    const b = self.stack.pop().number;
-                    const a = self.stack.pop().number;
-                    self.stack.push(.{ .number = a / b });
+                    const b = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    const a = (try self.stack_op(Stack.pop, .{&self.stack})).number;
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .number = a / b } });
                 },
                 OpCode.NOT => {
-                    self.stack.push(.{ .bool = self.stack.pop().falsey() });
+                    try self.stack_op(Stack.push, .{ &self.stack, Value{ .bool = (try self.stack_op(Stack.pop, .{&self.stack})).falsey() } });
                 },
                 OpCode.PRINT => {
-                    try self.stack.pop().print(stdout);
+                    const v = try self.stack_op(Stack.pop, .{&self.stack});
+                    try v.print(stdout);
                     try stdout.print("\n", .{});
                 },
                 OpCode.JUMP => {
@@ -226,7 +220,7 @@ pub const VM = struct {
                 },
                 OpCode.JUMP_IF_FALSE => {
                     const offset = read_short(frame);
-                    if (self.stack.peek(0).falsey()) {
+                    if ((try self.stack_op(Stack.peek, .{ &self.stack, 0 })).falsey()) {
                         frame.ip += offset;
                     }
                 },
@@ -236,23 +230,23 @@ pub const VM = struct {
                 },
                 OpCode.CALL => {
                     const arg_count = read_byte(frame);
-                    if (!try self.call_value(self.stack.peek(arg_count).*, arg_count)) {
+                    if (!try self.call_value((try self.stack_op(Stack.peek, .{ &self.stack, arg_count })).*, arg_count)) {
                         return InterpretError.RUNTIME_ERROR;
                     }
-                    frame = self.frames.top();
+                    frame = try self.stack_op(FrameStack.top, .{&self.frames});
                 },
                 OpCode.RETURN => {
-                    const result = self.stack.pop();
-                    _ = self.frames.pop();
+                    const result = try self.stack_op(Stack.pop, .{&self.stack});
+                    _ = try self.stack_op(FrameStack.pop, .{&self.frames});
                     if (self.frames.len == 0) {
-                        _ = self.stack.pop();
+                        _ = try self.stack_op(Stack.pop, .{&self.stack});
                         return;
                     }
 
                     // Restore stack to the value before current function call
                     self.stack.len = @TypeOf(self.stack).N - frame.slots.len;
-                    self.stack.push(result);
-                    frame = self.frames.top();
+                    try self.stack_op(Stack.push, .{ &self.stack, result });
+                    frame = try self.stack_op(FrameStack.top, .{&self.frames});
                 },
             }
         }
@@ -276,11 +270,11 @@ pub const VM = struct {
         return frame.function.chunk.constants.items[offset];
     }
 
-    fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) !void {
+    fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) InterpretError {
         const stderr = self.ctx.stderr;
 
-        try stderr.print(format, args);
-        try stderr.print("\n", .{});
+        stderr.print(format, args) catch {};
+        stderr.print("\n", .{}) catch {};
 
         var i = self.frames.len;
         while (i > 0) {
@@ -289,20 +283,24 @@ pub const VM = struct {
             const frame = self.frames.items[i];
             const function = frame.function;
 
-            try stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]});
+            stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]}) catch {};
             if (function.name) |name| {
-                try stderr.print("{s}()\n", .{name.chars});
+                stderr.print("{s}()\n", .{name.chars}) catch {};
             } else {
-                try stderr.print("script\n", .{});
+                stderr.print("script\n", .{}) catch {};
             }
         }
 
         self.stack.reset();
+
+        return InterpretError.RUNTIME_ERROR;
     }
 
     fn concatenate(self: *Self) !void {
-        const b: *String = @ptrCast(self.stack.pop().object);
-        const a: *String = @ptrCast(self.stack.pop().object);
+        const b_val = try self.stack_op(Stack.pop, .{&self.stack});
+        const b: *String = @ptrCast(b_val.object);
+        const a_val = try self.stack_op(Stack.pop, .{&self.stack});
+        const a: *String = @ptrCast(a_val.object);
 
         const len = a.chars.len + b.chars.len;
         const chars = try self.ctx.allocator.alloc(u8, len);
@@ -311,20 +309,20 @@ pub const VM = struct {
         std.mem.copyForwards(u8, chars[a.chars.len..len], b.chars);
 
         const str = try objects.take_string(self, chars);
-        self.stack.push(.{ .object = @ptrCast(str) });
+        try self.stack_op(Stack.push, .{ &self.stack, Value{ .object = @ptrCast(str) } });
     }
 
     fn define_native(self: *Self, name: []const u8, function: NativeFn) !void {
         const str = try objects.copy_string(self, name);
         const func = try objects.new_native(self, function);
 
-        self.stack.push(.{ .object = @ptrCast(str) });
-        self.stack.push(.{ .object = @ptrCast(func) });
+        try self.stack_op(Stack.push, .{ &self.stack, Value{ .object = @ptrCast(str) } });
+        try self.stack_op(Stack.push, .{ &self.stack, Value{ .object = @ptrCast(func) } });
 
-        _ = try self.globals.set(str, self.stack.peek(0).*);
+        _ = try self.globals.set(str, (try self.stack_op(Stack.peek, .{ &self.stack, 0 })).*);
 
-        _ = self.stack.pop();
-        _ = self.stack.pop();
+        _ = try self.stack_op(Stack.pop, .{&self.stack});
+        _ = try self.stack_op(Stack.pop, .{&self.stack});
     }
 
     fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
@@ -336,29 +334,40 @@ pub const VM = struct {
                     const stack_top = self.stack.len;
                     const result = native.function(self.stack.items[stack_top - arg_count .. stack_top]);
                     self.stack.len -= arg_count + 1;
-                    self.stack.push(result);
+                    try self.stack_op(Stack.push, .{ &self.stack, result });
                     return true;
                 },
                 else => {},
             }
         }
 
-        try self.runtime_error("Can only call functions and classes.", .{});
+        self.runtime_error("Can only call functions and classes.", .{}) catch {};
         return false;
     }
 
     fn call(self: *Self, function: *Function, arg_count: u8) !bool {
         if (arg_count != function.arity) {
-            try self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count });
+            self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count }) catch {};
             return false;
         }
 
-        const frame = self.frames.push_new();
+        const frame = try self.stack_op(FrameStack.push_new, .{&self.frames});
         frame.function = function;
         frame.ip = 0;
         // Get a view to the stack that starts with all arguments and function call
         frame.slots = self.stack.items[self.stack.len - arg_count - 1 .. @TypeOf(self.stack).N];
         return true;
+    }
+
+    fn stack_op(self: *Self, func: anytype, args: anytype) !StackFnWrapper(@TypeOf(func)).Ret {
+        if (comptime StackFnWrapper(@TypeOf(func)).Fallible) {
+            return @call(.auto, func, args) catch |err| {
+                const stack = args.@"0";
+                return self.runtime_error("{} Stack [{d}/{d}]", .{ err, stack.len, @TypeOf(stack.*).N });
+            };
+        } else {
+            return @call(.auto, func, args);
+        }
     }
 };
 
@@ -370,6 +379,12 @@ const CallFrame = struct {
     function: *Function,
     ip: usize,
     slots: []Value,
+};
+
+const StackError = error{
+OutOfRange,
+Overflow,
+Underflow,
 };
 
 fn FixedStack(comptime value_type: type, comptime size: usize) type {
@@ -390,31 +405,59 @@ fn FixedStack(comptime value_type: type, comptime size: usize) type {
             };
         }
 
-        pub fn push(self: *Self, value: T) void {
+        pub fn push(self: *Self, value: T) StackError!void {
+            if (self.len == N) {
+                return StackError.Overflow;
+            }
             self.items[self.len] = value;
             self.len += 1;
         }
 
-        pub fn push_new(self: *Self) *T {
+        pub fn push_new(self: *Self) StackError!*T {
+            if (self.len == N) {
+                return StackError.Overflow;
+            }
             self.len += 1;
             return self.top();
         }
 
-        pub fn pop(self: *Self) T {
+        pub fn pop(self: *Self) StackError!T {
+            if (self.len == 0) {
+                return StackError.Underflow;
+            }
             self.len -= 1;
             return self.items[self.len];
         }
 
-        pub fn top(self: *Self) *T {
+        pub fn top(self: *Self) StackError!*T {
+            if (self.len == 0) {
+                return StackError.OutOfRange;
+            }
             return &self.items[self.len - 1];
         }
 
-        pub fn peek(self: *Self, distance: usize) *T {
+        pub fn peek(self: *Self, distance: usize) StackError!*T {
+            if (self.len < distance + 1) {
+                return StackError.OutOfRange;
+            }
             return &self.items[self.len - 1 - distance];
         }
 
         pub fn reset(self: *Self) void {
             self.len = 0;
         }
+    };
+}
+
+fn StackFnWrapper(comptime func: type) type {
+    const OriginalRetType = @typeInfo(func).@"fn".return_type.?;
+    const IsFallible, const RetType = switch (@typeInfo(OriginalRetType)) {
+        .error_union => |e| .{ true, e.payload },
+        else => .{ false, OriginalRetType },
+    };
+
+    return struct {
+        const Ret = RetType;
+        const Fallible = IsFallible;
     };
 }
