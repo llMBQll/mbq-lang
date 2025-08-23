@@ -127,8 +127,7 @@ pub const VM = struct {
                     if (self.globals.get(name)) |value| {
                         self.stack.push(value);
                     } else {
-                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                     }
                 },
                 OpCode.DEFINE_GLOBAL => {
@@ -140,8 +139,7 @@ pub const VM = struct {
                     const is_new = try self.globals.set(name, self.stack.peek(0).*);
                     if (is_new) {
                         _ = self.globals.delete(name);
-                        try self.runtime_error("Undefined variable '{s}'.", .{name.chars});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                     }
                 },
                 OpCode.EQUAL => {
@@ -151,8 +149,7 @@ pub const VM = struct {
                 },
                 OpCode.GREATER => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                     const b = self.stack.pop().number;
                     const a = self.stack.pop().number;
@@ -160,8 +157,7 @@ pub const VM = struct {
                 },
                 OpCode.LESS => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                     const b = self.stack.pop().number;
                     const a = self.stack.pop().number;
@@ -169,8 +165,7 @@ pub const VM = struct {
                 },
                 OpCode.NEGATE => {
                     if (self.stack.peek(0).tag() != ValueType.number) {
-                        try self.runtime_error("Operand must be a number.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operand must be a number.", .{});
                     }
                     self.stack.push(.{ .number = -self.stack.pop().number });
                 },
@@ -182,14 +177,12 @@ pub const VM = struct {
                         const a = self.stack.pop().number;
                         self.stack.push(.{ .number = a + b });
                     } else {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                 },
                 OpCode.SUBTRACT => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                     const b = self.stack.pop().number;
                     const a = self.stack.pop().number;
@@ -197,8 +190,7 @@ pub const VM = struct {
                 },
                 OpCode.MULTIPLY => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                     const b = self.stack.pop().number;
                     const a = self.stack.pop().number;
@@ -206,8 +198,7 @@ pub const VM = struct {
                 },
                 OpCode.DIVIDE => {
                     if (self.stack.peek(0).tag() != ValueType.number or self.stack.peek(1).tag() != ValueType.number) {
-                        try self.runtime_error("Operands must be numbers.", .{});
-                        return InterpretError.RUNTIME_ERROR;
+                        return self.runtime_error("Operands must be numbers.", .{});
                     }
                     const b = self.stack.pop().number;
                     const a = self.stack.pop().number;
@@ -236,9 +227,7 @@ pub const VM = struct {
                 },
                 OpCode.CALL => {
                     const arg_count = read_byte(frame);
-                    if (!try self.call_value(self.stack.peek(arg_count).*, arg_count)) {
-                        return InterpretError.RUNTIME_ERROR;
-                    }
+                    try self.call_value(self.stack.peek(arg_count).*, arg_count);
                     frame = self.frames.top();
                 },
                 OpCode.RETURN => {
@@ -276,11 +265,11 @@ pub const VM = struct {
         return frame.function.chunk.constants.items[offset];
     }
 
-    fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) !void {
+    fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) InterpretError {
         const stderr = self.ctx.stderr;
 
-        try stderr.print(format, args);
-        try stderr.print("\n", .{});
+        stderr.print(format, args) catch {};
+        stderr.print("\n", .{}) catch {};
 
         var i = self.frames.len;
         while (i > 0) {
@@ -289,15 +278,17 @@ pub const VM = struct {
             const frame = self.frames.items[i];
             const function = frame.function;
 
-            try stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]});
+            stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]}) catch {};
             if (function.name) |name| {
-                try stderr.print("{s}()\n", .{name.chars});
+                stderr.print("{s}()\n", .{name.chars}) catch {};
             } else {
-                try stderr.print("script\n", .{});
+                stderr.print("script\n", .{}) catch {};
             }
         }
 
         self.stack.reset();
+
+        return InterpretError.RUNTIME_ERROR;
     }
 
     fn concatenate(self: *Self) !void {
@@ -327,7 +318,7 @@ pub const VM = struct {
         _ = self.stack.pop();
     }
 
-    fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
+    fn call_value(self: *Self, callee: Value, arg_count: u8) InterpretError!void {
         if (callee.tag() == ValueType.object) {
             switch (callee.object.obj_type) {
                 ObjType.FUNCTION => return self.call(@ptrCast(callee.object), arg_count),
@@ -337,20 +328,18 @@ pub const VM = struct {
                     const result = native.function(self.stack.items[stack_top - arg_count .. stack_top]);
                     self.stack.len -= arg_count + 1;
                     self.stack.push(result);
-                    return true;
+                    return;
                 },
                 else => {},
             }
         }
 
-        try self.runtime_error("Can only call functions and classes.", .{});
-        return false;
+        return self.runtime_error("Can only call functions and classes.", .{});
     }
 
-    fn call(self: *Self, function: *Function, arg_count: u8) !bool {
+    fn call(self: *Self, function: *Function, arg_count: u8) InterpretError!void {
         if (arg_count != function.arity) {
-            try self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count });
-            return false;
+            return self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count });
         }
 
         const frame = self.frames.push_new();
@@ -358,7 +347,6 @@ pub const VM = struct {
         frame.ip = 0;
         // Get a view to the stack that starts with all arguments and function call
         frame.slots = self.stack.items[self.stack.len - arg_count - 1 .. @TypeOf(self.stack).N];
-        return true;
     }
 };
 
@@ -373,8 +361,6 @@ const CallFrame = struct {
 };
 
 fn FixedStack(comptime value_type: type, comptime size: usize) type {
-    // TODO add error handling for stack overflow and removal on empty stack
-
     return struct {
         const Self = @This();
         const N = size;
