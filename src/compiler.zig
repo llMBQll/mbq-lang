@@ -30,13 +30,15 @@ const Parser = struct {
 
 const Compiler = struct {
     const MAx_LOCAL_COUNT = std.math.maxInt(u8) + 1;
+    const MAX_UPVALUE_COUNT = std.math.maxInt(u8) + 1;
 
-    enclosing: *Compiler,
+    enclosing: ?*Compiler,
     function: *Function,
     fn_type: FnType,
 
     locals: [MAx_LOCAL_COUNT]Local,
     local_count: u32,
+    upvalues: [MAX_UPVALUE_COUNT]Upvalue,
     scope_depth: u32,
 };
 
@@ -48,6 +50,12 @@ const FnType = enum {
 const Local = struct {
     name: Token,
     depth: ?u32,
+    is_captured: bool,
+};
+
+const Upvalue = struct {
+    index: u8,
+    is_local: bool,
 };
 
 const Precedence = enum {
@@ -87,7 +95,7 @@ pub fn compile(vm: *VM, source: []const u8) !?*Function {
     };
 
     var compiler: Compiler = undefined;
-    try init_compiler(&compiler, vm, FnType.SCRIPT);
+    try init_compiler(&compiler, vm, FnType.SCRIPT, null);
 
     lexer = Lexer.init(source);
     defer lexer.deinit();
@@ -104,8 +112,8 @@ pub fn compile(vm: *VM, source: []const u8) !?*Function {
     return if (parser.had_error) null else func;
 }
 
-fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType) !void {
-    compiler.enclosing = current;
+fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType, previous: ?*Compiler) !void {
+    compiler.enclosing = previous;
     compiler.function = try objects.new_function(vm);
     compiler.fn_type = fn_type;
     compiler.local_count = 0;
@@ -114,6 +122,7 @@ fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType) !void {
     const local = &compiler.locals[compiler.local_count];
     compiler.local_count += 1;
     local.depth = 0;
+    local.is_captured = false;
     local.name.token = "";
 
     if (fn_type != FnType.SCRIPT) {
@@ -137,7 +146,7 @@ fn end_compiler() !*Function {
         }
     }
 
-    current = current.enclosing;
+    current = if (current.enclosing) |enclosing| enclosing else undefined;
 
     return func;
 }
@@ -286,7 +295,7 @@ fn fn_declaration() !void {
 
 fn function(fn_type: FnType) !void {
     var compiler: Compiler = undefined;
-    try init_compiler(&compiler, parser.vm, fn_type);
+    try init_compiler(&compiler, parser.vm, fn_type, current);
     begin_scope();
 
     try consume(TokenType.LEFT_PAREN, "Expect '(' after function name.");
@@ -315,7 +324,12 @@ fn function(fn_type: FnType) !void {
 
     const func = try end_compiler();
     const arg = try make_constant(.{ .object = @ptrCast(func) });
-    try emit_bytes(OpCode.CONSTANT, arg);
+    try emit_bytes(OpCode.CLOSURE, arg);
+
+    for (0..func.upvalue_count) |i| {
+        try emit_byte(@intFromBool(compiler.upvalues[i].is_local));
+        try emit_byte(compiler.upvalues[i].index);
+    }
 }
 
 fn var_declaration() !void {
@@ -381,6 +395,7 @@ fn add_local(name: *Token) !void {
 
     local.name = name.*;
     local.depth = null;
+    local.is_captured = false;
 }
 
 fn parse_variable(comptime error_message: []const u8) !u8 {
@@ -565,7 +580,12 @@ fn end_scope() !void {
             break;
         }
 
-        try emit_byte(OpCode.POP);
+        if (current.locals[current.local_count].is_captured) {
+            try emit_byte(OpCode.CLOSE_UPVALUE);
+        } else {
+            try emit_byte(OpCode.POP);
+        }
+
         current.local_count -= 1;
     }
 }
@@ -630,13 +650,15 @@ fn variable(can_assign: bool) !void {
 }
 
 fn named_variable(name: *const Token, can_assign: bool) !void {
-    const maybe_local = try resolve_local(current, name);
-
-    const arg, const get, const set = if (maybe_local) |local| blk: {
-        break :blk .{ local, OpCode.GET_LOCAL, OpCode.SET_LOCAL };
-    } else blk: {
-        const global = try identifier_constant(name);
-        break :blk .{ global, OpCode.GET_GLOBAL, OpCode.SET_GLOBAL };
+    const arg, const get, const set = blk: {
+        if (try resolve_local(current, name)) |local| {
+            break :blk .{ local, OpCode.GET_LOCAL, OpCode.SET_LOCAL };
+        } else if (try resolve_upvalue(current, name)) |upvalue| {
+            break :blk .{ upvalue, OpCode.GET_UPVALUE, OpCode.SET_UPVALUE };
+        } else {
+            const global = try identifier_constant(name);
+            break :blk .{ global, OpCode.GET_GLOBAL, OpCode.SET_GLOBAL };
+        }
     };
 
     if (can_assign and try match(TokenType.EQUAL)) {
@@ -660,6 +682,40 @@ fn resolve_local(compiler: *Compiler, name: *const Token) !?u8 {
         }
     }
     return null;
+}
+
+fn resolve_upvalue(compiler: *Compiler, name: *const Token) !?u8 {
+    if (compiler.enclosing) |enclosing| {
+        if (try resolve_local(enclosing, name)) |local| {
+            enclosing.locals[local].is_captured = true;
+            return add_upvalue(compiler, local, true);
+        } else if (try resolve_upvalue(enclosing, name)) |upvalue| {
+            return add_upvalue(compiler, upvalue, false);
+        }
+    }
+    return null;
+}
+
+fn add_upvalue(compiler: *Compiler, index: u8, is_local: bool) !?u8 {
+    const count = compiler.function.upvalue_count;
+
+    for (0..count) |i| {
+        const upvalue = &compiler.upvalues[i];
+        if (upvalue.index == index and upvalue.is_local == is_local) {
+            return @truncate(i);
+        }
+    }
+
+    if (count == Compiler.MAX_UPVALUE_COUNT) {
+        try err("Too many closure variables in function.");
+        return 0;
+    }
+
+    compiler.upvalues[count].is_local = is_local;
+    compiler.upvalues[count].index = index;
+
+    compiler.function.upvalue_count += 1;
+    return @truncate(count);
 }
 
 fn get_rule(token_type: TokenType) *const ParseRule {

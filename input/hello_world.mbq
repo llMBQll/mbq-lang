@@ -1,8 +1,18 @@
-fn fib(n) {
-  if (n < 2) return n;
-  return fib(n - 2) + fib(n - 1);
+fn outer() {
+  var x = "value";
+  fn middle() {
+    fn inner() {
+      print x;
+    }
+
+    print "create inner closure";
+    return inner;
+  }
+
+  print "return from outer";
+  return middle;
 }
 
-var start = clock();
-print fib(35);
-print clock() - start;
+var mid = outer();
+var in = mid();
+in();

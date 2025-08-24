@@ -1,9 +1,11 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
+const objects = @import("objects.zig");
 const values = @import("values.zig");
 
 const OpCode = chunks.OpCode;
+const Function = objects.Function;
 
 pub fn disassemble_chunk(chunk: *chunks.Chunk, name: []const u8, stdout: anytype) !void {
     try stdout.print("== {s} ==\n", .{name});
@@ -37,6 +39,8 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
         @intFromEnum(OpCode.GET_GLOBAL) => return try constant_instruction("OP_GET_GLOBAL", chunk, offset, stdout),
         @intFromEnum(OpCode.DEFINE_GLOBAL) => return try constant_instruction("OP_DEFINE_GLOBAL", chunk, offset, stdout),
         @intFromEnum(OpCode.SET_GLOBAL) => return try constant_instruction("OP_SET_GLOBAL", chunk, offset, stdout),
+        @intFromEnum(OpCode.GET_UPVALUE) => return try byte_instruction("OP_GET_UPVALUE", chunk, offset, stdout),
+        @intFromEnum(OpCode.SET_UPVALUE) => return try byte_instruction("OP_SET_UPVALUE", chunk, offset, stdout),
         @intFromEnum(OpCode.EQUAL) => return try simple_instruction("OP_EQUAL", offset, stdout),
         @intFromEnum(OpCode.GREATER) => return try simple_instruction("OP_GREATER", offset, stdout),
         @intFromEnum(OpCode.LESS) => return try simple_instruction("OP_LESS", offset, stdout),
@@ -51,6 +55,32 @@ pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anyt
         @intFromEnum(OpCode.JUMP_IF_FALSE) => return try jump_instruction("OP_JUMP_IF_FALSE", '+', chunk, offset, stdout),
         @intFromEnum(OpCode.LOOP) => return try jump_instruction("OP_LOOP", '-', chunk, offset, stdout),
         @intFromEnum(OpCode.CALL) => return try byte_instruction("OP_CALL", chunk, offset, stdout),
+        @intFromEnum(OpCode.CLOSURE) => {
+            var off = offset;
+
+            off += 1;
+            const constant = chunk.code.items[off];
+            off += 1;
+
+            try stdout.print("{s:<16} {d:4} ", .{ "OP_CLOSURE", constant });
+            try chunk.constants.items[constant].print(stdout);
+            try stdout.print("\n", .{});
+
+            const function: *const Function = @ptrCast(chunk.constants.items[constant].object);
+            for (0..function.upvalue_count) |_| {
+                const is_local = chunk.code.items[off];
+                off += 1;
+                const index = chunk.code.items[off];
+                off += 1;
+                try stdout.print(
+                    "{d:0>4}      |                     {s} {d}\n",
+                    .{ off - 2, if (is_local == 1) "local" else "upvalue", index },
+                );
+            }
+
+            return off;
+        },
+        @intFromEnum(OpCode.CLOSE_UPVALUE) => return try simple_instruction("OP_CLOSE_UPVALUE", offset, stdout),
         @intFromEnum(OpCode.RETURN) => return try simple_instruction("OP_RETURN", offset, stdout),
         else => {
             try stdout.print("Unknown instruction [{d}]\n", .{instruction});

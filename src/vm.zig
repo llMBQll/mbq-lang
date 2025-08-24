@@ -11,6 +11,7 @@ const values = @import("values.zig");
 const Chunk = chunks.Chunk;
 const Obj = objects.Obj;
 const ObjType = objects.ObjType;
+const Closure = objects.Closure;
 const Function = objects.Function;
 const Native = objects.Native;
 const NativeFn = objects.NativeFn;
@@ -37,6 +38,7 @@ pub const VM = struct {
     stack: FixedStack(Value, STACK_MAX),
     chunk: ?*Chunk,
     obj_list: ?*Obj,
+    open_upvalues: ?*objects.Upvalue,
     globals: Table,
     strings: Table,
     ctx: context.Context,
@@ -47,6 +49,7 @@ pub const VM = struct {
             .stack = FixedStack(Value, STACK_MAX).init(),
             .chunk = null,
             .obj_list = null,
+            .open_upvalues = null,
             .globals = Table.init(ctx.allocator),
             .strings = Table.init(ctx.allocator),
             .ctx = ctx,
@@ -73,8 +76,10 @@ pub const VM = struct {
         const func = try compiler.compile(self, source);
         if (func) |function| {
             self.stack.push(.{ .object = @ptrCast(function) });
-
-            _ = try self.call(function, 0);
+            const closure = try objects.new_closure(self, function);
+            _ = self.stack.pop();
+            self.stack.push(.{ .object = @ptrCast(closure) });
+            _ = try self.call(closure, 0);
 
             return self.run();
         } else {
@@ -101,7 +106,7 @@ pub const VM = struct {
                 }
                 try stdout.print("\n", .{});
 
-                _ = try debug.disassemble_instruction(&frame.function.chunk, frame.ip, stdout);
+                _ = try debug.disassemble_instruction(&frame.closure.function.chunk, frame.ip, stdout);
             }
 
             const instruction: OpCode = @enumFromInt(read_byte(frame));
@@ -141,6 +146,14 @@ pub const VM = struct {
                         _ = self.globals.delete(name);
                         return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
                     }
+                },
+                OpCode.GET_UPVALUE => {
+                    const slot = read_byte(frame);
+                    self.stack.push(frame.closure.upvalues.items[slot].?.location.*);
+                },
+                OpCode.SET_UPVALUE => {
+                    const slot = read_byte(frame);
+                    frame.closure.upvalues.items[slot].?.location.* = self.stack.peek(0).*;
                 },
                 OpCode.EQUAL => {
                     const b = self.stack.pop();
@@ -230,8 +243,30 @@ pub const VM = struct {
                     try self.call_value(self.stack.peek(arg_count).*, arg_count);
                     frame = self.frames.top();
                 },
+                OpCode.CLOSURE => {
+                    const function: *Function = @ptrCast(read_constant(frame).object);
+                    const closure = try objects.new_closure(self, function);
+                    self.stack.push(.{ .object = @ptrCast(closure) });
+
+                    for (closure.upvalues.items) |*item| {
+                        const is_local = read_byte(frame);
+                        const index = read_byte(frame);
+
+                        if (is_local == 1) {
+                            item.* = try self.capture_upvalue(&frame.slots[index]);
+                        } else {
+                            item.* = frame.closure.upvalues.items[index].?;
+                        }
+                    }
+                },
+                OpCode.CLOSE_UPVALUE => {
+                    self.close_upvalues(self.stack.peek(0));
+                    _ = self.stack.pop();
+                },
                 OpCode.RETURN => {
                     const result = self.stack.pop();
+                    self.close_upvalues(&frame.slots[0]);
+
                     _ = self.frames.pop();
                     if (self.frames.len == 0) {
                         _ = self.stack.pop();
@@ -248,7 +283,7 @@ pub const VM = struct {
     }
 
     fn read_byte(frame: *CallFrame) u8 {
-        const instruction: u8 = frame.function.chunk.code.items[frame.ip];
+        const instruction: u8 = frame.closure.function.chunk.code.items[frame.ip];
         frame.ip += 1;
         return instruction;
     }
@@ -262,7 +297,7 @@ pub const VM = struct {
 
     fn read_constant(frame: *CallFrame) Value {
         const offset = read_byte(frame);
-        return frame.function.chunk.constants.items[offset];
+        return frame.closure.function.chunk.constants.items[offset];
     }
 
     fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) InterpretError {
@@ -276,7 +311,7 @@ pub const VM = struct {
             i -= 1;
 
             const frame = self.frames.items[i];
-            const function = frame.function;
+            const function = frame.closure.function;
 
             stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]}) catch {};
             if (function.name) |name| {
@@ -321,7 +356,7 @@ pub const VM = struct {
     fn call_value(self: *Self, callee: Value, arg_count: u8) InterpretError!void {
         if (callee.tag() == ValueType.object) {
             switch (callee.object.obj_type) {
-                ObjType.FUNCTION => return self.call(@ptrCast(callee.object), arg_count),
+                ObjType.CLOSURE => return self.call(@ptrCast(callee.object), arg_count),
                 ObjType.NATIVE => {
                     const native: *Native = @ptrCast(callee.object);
                     const stack_top = self.stack.len;
@@ -337,16 +372,50 @@ pub const VM = struct {
         return self.runtime_error("Can only call functions and classes.", .{});
     }
 
-    fn call(self: *Self, function: *Function, arg_count: u8) InterpretError!void {
-        if (arg_count != function.arity) {
-            return self.runtime_error("Expected {d} arguments, got {}", .{ function.arity, arg_count });
+    fn call(self: *Self, closure: *Closure, arg_count: u8) InterpretError!void {
+        if (arg_count != closure.function.arity) {
+            return self.runtime_error("Expected {d} arguments, got {}", .{ closure.function.arity, arg_count });
         }
 
         const frame = self.frames.push_new();
-        frame.function = function;
+        frame.closure = closure;
         frame.ip = 0;
         // Get a view to the stack that starts with all arguments and function call
         frame.slots = self.stack.items[self.stack.len - arg_count - 1 .. @TypeOf(self.stack).N];
+    }
+
+    fn capture_upvalue(self: *Self, local: *Value) !*objects.Upvalue {
+        var prev: ?*objects.Upvalue = null;
+        var current: ?*objects.Upvalue = self.open_upvalues;
+
+        while (current != null and @intFromPtr(current.?.location) > @intFromPtr(local)) {
+            prev = current;
+            current = current.?.next;
+        }
+
+        if (current != null and current.?.location == local) {
+            return current.?;
+        }
+
+        const upvalue = try objects.new_upvalue(self, local);
+
+        upvalue.next = current;
+        if (prev == null) {
+            self.open_upvalues = upvalue;
+        } else {
+            prev.?.next = upvalue;
+        }
+
+        return upvalue;
+    }
+
+    fn close_upvalues(self: *Self, last: *const Value) void {
+        while (self.open_upvalues != null and @intFromPtr(self.open_upvalues.?.location) >= @intFromPtr(last)) {
+            const upvalue = self.open_upvalues;
+            upvalue.?.closed = upvalue.?.location.*;
+            upvalue.?.location = &upvalue.?.closed;
+            self.open_upvalues = upvalue.?.next;
+        }
     }
 };
 
@@ -355,7 +424,7 @@ fn clock_native(_: []Value) Value {
 }
 
 const CallFrame = struct {
-    function: *Function,
+    closure: *Closure,
     ip: usize,
     slots: []Value,
 };

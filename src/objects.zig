@@ -11,9 +11,11 @@ const ValueType = values.ValueType;
 const VM = vm_mod.VM;
 
 pub const ObjType = enum {
+    CLOSURE,
     FUNCTION,
     NATIVE,
     STRING,
+    UPVALUE,
 };
 
 pub const Obj = struct {
@@ -22,26 +24,36 @@ pub const Obj = struct {
     obj_type: ObjType,
     next: ?*Obj,
 
-    pub fn print(self: *Self, stdout: anytype) !void {
+    pub fn print(self: *const Self, stdout: anytype) !void {
         switch (self.obj_type) {
+            ObjType.CLOSURE => {
+                const closure: *const Closure = @ptrCast(self);
+                try print_function(stdout, closure.function);
+            },
             ObjType.FUNCTION => {
-                const function: *Function = @ptrCast(self);
-
-                if (function.name) |name| {
-                    try stdout.print("fn <{s}>", .{name.chars});
-                } else {
-                    try stdout.print("<script>", .{});
-                }
+                const function: *const Function = @ptrCast(self);
+                try print_function(stdout, function);
             },
             ObjType.NATIVE => {
-                // const native: *Native = @ptrCast(self);
-
+                // const native: *const Native = @ptrCast(self);
                 try stdout.print("<native fn>", .{});
             },
             ObjType.STRING => {
-                const str: *String = @ptrCast(self);
+                const str: *const String = @ptrCast(self);
                 try stdout.print("{s}", .{str.chars});
             },
+            ObjType.UPVALUE => {
+                // const upvalue: *const Upvalue = @ptrCast(self);
+                try stdout.print("upvalue", .{});
+            },
+        }
+    }
+
+    fn print_function(stdout: anytype, function: *const Function) !void {
+        if (function.name) |name| {
+            try stdout.print("fn <{s}>", .{name.chars});
+        } else {
+            try stdout.print("<script>", .{});
         }
     }
 };
@@ -51,6 +63,7 @@ pub const Function = struct {
 
     obj: Obj,
     arity: usize,
+    upvalue_count: usize,
     chunk: Chunk,
     name: ?*String,
 };
@@ -72,6 +85,23 @@ pub const String = struct {
     hash: u32,
 };
 
+pub const Upvalue = struct {
+    const obj_type = ObjType.UPVALUE;
+
+    obj: Obj,
+    location: *Value,
+    closed: Value,
+    next: ?*Upvalue,
+};
+
+pub const Closure = struct {
+    const obj_type = ObjType.CLOSURE;
+
+    obj: Obj,
+    function: *Function,
+    upvalues: std.ArrayList(?*Upvalue),
+};
+
 pub fn is(value: *Value, obj_type: ObjType) bool {
     return value.tag() == ValueType.object and value.object.obj_type == obj_type;
 }
@@ -79,6 +109,7 @@ pub fn is(value: *Value, obj_type: ObjType) bool {
 pub fn new_function(vm: *VM) !*Function {
     const function = try allocate(vm, Function);
     function.arity = 0;
+    function.upvalue_count = 0;
     function.chunk = try Chunk.init(vm.ctx.allocator);
     function.name = null;
     return function;
@@ -126,6 +157,22 @@ fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
     return str;
 }
 
+pub fn new_closure(vm: *VM, function: *Function) !*Closure {
+    const closure = try allocate(vm, Closure);
+    closure.function = function;
+    closure.upvalues = try std.ArrayList(?*Upvalue).initCapacity(vm.ctx.allocator, function.upvalue_count);
+    closure.upvalues.appendNTimesAssumeCapacity(null, function.upvalue_count);
+    return closure;
+}
+
+pub fn new_upvalue(vm: *VM, slot: *Value) !*Upvalue {
+    const upvalue = try allocate(vm, Upvalue);
+    upvalue.closed = .nil;
+    upvalue.location = slot;
+    upvalue.next = null;
+    return upvalue;
+}
+
 fn allocate(vm: *VM, comptime T: type) !*T {
     const object = try vm.ctx.allocator.create(T);
 
@@ -140,6 +187,11 @@ pub fn deallocate(vm: *VM, obj: *Obj) void {
     const allocator = vm.ctx.allocator;
 
     switch (obj.obj_type) {
+        ObjType.CLOSURE => {
+            const closure: *Closure = @ptrCast(obj);
+            closure.upvalues.deinit();
+            allocator.destroy(closure);
+        },
         ObjType.FUNCTION => {
             const function: *Function = @ptrCast(obj);
             function.chunk.deinit();
@@ -153,6 +205,10 @@ pub fn deallocate(vm: *VM, obj: *Obj) void {
             const str: *String = @ptrCast(obj);
             allocator.free(str.chars);
             allocator.destroy(str);
+        },
+        ObjType.UPVALUE => {
+            const upvalue: *Upvalue = @ptrCast(obj);
+            allocator.destroy(upvalue);
         },
     }
 }

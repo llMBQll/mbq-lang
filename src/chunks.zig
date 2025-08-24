@@ -13,6 +13,8 @@ pub const OpCode = enum(u8) {
     GET_GLOBAL,
     DEFINE_GLOBAL,
     SET_GLOBAL,
+    GET_UPVALUE,
+    SET_UPVALUE,
     EQUAL,
     GREATER,
     LESS,
@@ -27,6 +29,8 @@ pub const OpCode = enum(u8) {
     JUMP_IF_FALSE,
     LOOP,
     CALL,
+    CLOSURE,
+    CLOSE_UPVALUE,
     RETURN,
 };
 
@@ -54,7 +58,7 @@ pub const Chunk = struct {
     pub fn write_byte(self: *Self, val: anytype, line: usize) !void {
         const T = @TypeOf(val);
         const byte: u8 = switch (T) {
-            u8 => val,
+            u1, u8 => val,
             u18, u32, u64, u128, usize => @truncate(val),
             comptime_int => @truncate(val),
             OpCode => @intFromEnum(val),
