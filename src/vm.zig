@@ -36,7 +36,6 @@ pub const VM = struct {
 
     frames: FixedStack(CallFrame, FRAMES_MAX),
     stack: FixedStack(Value, STACK_MAX),
-    chunk: ?*Chunk,
     obj_list: ?*Obj,
     open_upvalues: ?*objects.Upvalue,
     globals: Table,
@@ -47,7 +46,6 @@ pub const VM = struct {
         var self = Self{
             .frames = FixedStack(CallFrame, FRAMES_MAX).init(),
             .stack = FixedStack(Value, STACK_MAX).init(),
-            .chunk = null,
             .obj_list = null,
             .open_upvalues = null,
             .globals = Table.init(ctx.allocator),
@@ -106,7 +104,8 @@ pub const VM = struct {
                 }
                 try stdout.print("\n", .{});
 
-                _ = try debug.disassemble_instruction(&frame.closure.function.chunk, frame.ip, stdout);
+                const offset = frame.ip - frame.closure.function.chunk.code.items.ptr;
+                _ = try debug.disassemble_instruction(&frame.closure.function.chunk, offset, stdout);
             }
 
             const instruction: OpCode = @enumFromInt(read_byte(frame));
@@ -153,7 +152,7 @@ pub const VM = struct {
                 },
                 OpCode.SET_UPVALUE => {
                     const slot = read_byte(frame);
-                    frame.closure.upvalues.items[slot].?.location.* = self.stack.peek(0).*;
+                    frame.closure.upvalues.items[slot].?.location = self.stack.peek(0);
                 },
                 OpCode.EQUAL => {
                     const b = self.stack.pop();
@@ -274,7 +273,7 @@ pub const VM = struct {
                     }
 
                     // Restore stack to the value before current function call
-                    self.stack.len = @TypeOf(self.stack).N - frame.slots.len;
+                    self.stack.len = frame.slots - &self.stack.items;
                     self.stack.push(result);
                     frame = self.frames.top();
                 },
@@ -283,7 +282,7 @@ pub const VM = struct {
     }
 
     fn read_byte(frame: *CallFrame) u8 {
-        const instruction: u8 = frame.closure.function.chunk.code.items[frame.ip];
+        const instruction: u8 = frame.ip[0];
         frame.ip += 1;
         return instruction;
     }
@@ -312,8 +311,9 @@ pub const VM = struct {
 
             const frame = self.frames.items[i];
             const function = frame.closure.function;
+            const instruction = frame.ip - frame.closure.function.chunk.code.items.ptr;
 
-            stderr.print("[line {d}] in ", .{function.chunk.lines.items[frame.ip]}) catch {};
+            stderr.print("[line {d}] in ", .{function.chunk.lines.items[instruction]}) catch {};
             if (function.name) |name| {
                 stderr.print("{s}()\n", .{name.chars}) catch {};
             } else {
@@ -379,16 +379,15 @@ pub const VM = struct {
 
         const frame = self.frames.push_new();
         frame.closure = closure;
-        frame.ip = 0;
-        // Get a view to the stack that starts with all arguments and function call
-        frame.slots = self.stack.items[self.stack.len - arg_count - 1 .. @TypeOf(self.stack).N];
+        frame.ip = closure.function.chunk.code.items.ptr;
+        frame.slots = @ptrCast(&self.stack.items[self.stack.len - arg_count - 1]);
     }
 
     fn capture_upvalue(self: *Self, local: *Value) !*objects.Upvalue {
         var prev: ?*objects.Upvalue = null;
         var current: ?*objects.Upvalue = self.open_upvalues;
 
-        while (current != null and @intFromPtr(current.?.location) > @intFromPtr(local)) {
+        while (current != null and current.?.location - local > 0) {
             prev = current;
             current = current.?.next;
         }
@@ -410,7 +409,7 @@ pub const VM = struct {
     }
 
     fn close_upvalues(self: *Self, last: *const Value) void {
-        while (self.open_upvalues != null and @intFromPtr(self.open_upvalues.?.location) >= @intFromPtr(last)) {
+        while (self.open_upvalues != null and self.open_upvalues.?.location - last > 0) {
             const upvalue = self.open_upvalues;
             upvalue.?.closed = upvalue.?.location.*;
             upvalue.?.location = &upvalue.?.closed;
@@ -425,8 +424,8 @@ fn clock_native(_: []Value) Value {
 
 const CallFrame = struct {
     closure: *Closure,
-    ip: usize,
-    slots: []Value,
+    ip: [*]u8,
+    slots: [*]Value,
 };
 
 fn FixedStack(comptime value_type: type, comptime size: usize) type {
