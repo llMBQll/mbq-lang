@@ -48,8 +48,8 @@ pub const VM = struct {
             .stack = FixedStack(Value, STACK_MAX).init(),
             .obj_list = null,
             .open_upvalues = null,
-            .globals = Table.init(ctx.allocator),
-            .strings = Table.init(ctx.allocator),
+            .globals = Table.init(),
+            .strings = Table.init(),
             .ctx = ctx,
         };
 
@@ -59,8 +59,8 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.globals.deinit();
-        self.strings.deinit();
+        self.globals.deinit(self.ctx.allocator);
+        self.strings.deinit(self.ctx.allocator);
 
         var current = self.obj_list;
         while (current) |obj| {
@@ -87,25 +87,16 @@ pub const VM = struct {
 
     fn run(self: *Self) !void {
         const stdout = self.ctx.stdout;
+        const allocator = self.ctx.allocator;
 
         var frame = self.frames.top();
 
         while (true) {
             if (comptime DEBUG_TRACING) {
-                try stdout.print("          ", .{});
-                if (self.stack.len == 0) {
-                    try stdout.print("[ ]", .{});
-                } else {
-                    for (0..self.stack.len) |i| {
-                        try stdout.print("[ ", .{});
-                        try self.stack.items[i].print(stdout);
-                        try stdout.print(" ]", .{});
-                    }
-                }
-                try stdout.print("\n", .{});
-
-                const offset = frame.ip - frame.closure.function.chunk.code.items.ptr;
-                _ = try debug.disassemble_instruction(&frame.closure.function.chunk, offset, stdout);
+                self.disassemble_current_instruction(frame) catch |e| {
+                    self.ctx.stderr.print("Failed to debug current instruction {}", .{e}) catch {};
+                    self.ctx.stderr.flush() catch {};
+                };
             }
 
             const instruction: OpCode = @enumFromInt(read_byte(frame));
@@ -136,11 +127,11 @@ pub const VM = struct {
                 },
                 OpCode.DEFINE_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    _ = try self.globals.set(name, self.stack.pop());
+                    _ = try self.globals.set(allocator, name, self.stack.pop());
                 },
                 OpCode.SET_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    const is_new = try self.globals.set(name, self.stack.peek(0).*);
+                    const is_new = try self.globals.set(allocator, name, self.stack.peek(0).*);
                     if (is_new) {
                         _ = self.globals.delete(name);
                         return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
@@ -347,7 +338,7 @@ pub const VM = struct {
         self.stack.push(.{ .object = @ptrCast(str) });
         self.stack.push(.{ .object = @ptrCast(func) });
 
-        _ = try self.globals.set(str, self.stack.peek(0).*);
+        _ = try self.globals.set(self.ctx.allocator, str, self.stack.peek(0).*);
 
         _ = self.stack.pop();
         _ = self.stack.pop();
@@ -415,6 +406,29 @@ pub const VM = struct {
             upvalue.?.location = &upvalue.?.closed;
             self.open_upvalues = upvalue.?.next;
         }
+    }
+
+    fn disassemble_current_instruction(self: *const Self, frame: *const CallFrame) !void {
+        const stdout = self.ctx.stdout;
+
+        try stdout.print("          ", .{});
+        if (self.stack.len == 0) {
+            try stdout.print("[ ]", .{});
+        } else {
+            for (0..self.stack.len) |i| {
+                try stdout.print("[ ", .{});
+                try self.stack.items[i].print(stdout);
+                try stdout.print(" ]", .{});
+            }
+        }
+        try stdout.print("\n", .{});
+
+        const offset = frame.ip - frame.closure.function.chunk.code.items.ptr;
+        _ = try debug.disassemble_instruction(
+            &frame.closure.function.chunk,
+            offset,
+            stdout,
+        );
     }
 };
 

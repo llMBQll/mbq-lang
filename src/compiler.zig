@@ -10,6 +10,7 @@ const vm_mod = @import("vm.zig");
 
 const DEBUG_TRACING = true;
 
+const Allocator = std.mem.Allocator;
 const Chunk = chunks.Chunk;
 const Lexer = lexer_mod.Lexer;
 const Function = objects.Function;
@@ -72,7 +73,7 @@ const Precedence = enum {
     PRIMARY,
 };
 
-const ParseFn = *const fn (bool) anyerror!void;
+const ParseFn = *const fn (bool) Allocator.Error!void;
 
 const ParseRule = struct {
     prefix: ?ParseFn,
@@ -84,7 +85,7 @@ var lexer: Lexer = undefined;
 var parser: Parser = undefined;
 var current: *Compiler = undefined;
 
-pub fn compile(vm: *VM, source: []const u8) !?*Function {
+pub fn compile(vm: *VM, source: []const u8) Allocator.Error!?*Function {
     parser = .{
         .current = undefined,
         .previous = undefined,
@@ -100,19 +101,19 @@ pub fn compile(vm: *VM, source: []const u8) !?*Function {
     lexer = Lexer.init(source);
     defer lexer.deinit();
 
-    try advance();
+    advance();
 
-    while (!try match(TokenType.EOF)) {
+    while (!match(TokenType.EOF)) {
         try declaration();
     }
 
-    try consume(TokenType.EOF, "Expected end of expression.");
+    consume(TokenType.EOF, "Expected end of expression.");
 
     const func = try end_compiler();
     return if (parser.had_error) null else func;
 }
 
-fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType, previous: ?*Compiler) !void {
+fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType, previous: ?*Compiler) Allocator.Error!void {
     compiler.enclosing = previous;
     compiler.function = try objects.new_function(vm);
     compiler.fn_type = fn_type;
@@ -132,17 +133,20 @@ fn init_compiler(compiler: *Compiler, vm: *VM, fn_type: FnType, previous: ?*Comp
     current = compiler;
 }
 
-fn end_compiler() !*Function {
+fn end_compiler() Allocator.Error!*Function {
     try emit_return();
     const func = current.function;
 
     if (comptime DEBUG_TRACING) {
         if (!parser.had_error) {
-            try debug.disassemble_chunk(
+            debug.disassemble_chunk(
                 current_chunk(),
                 if (func.name) |name| name.chars else "<script>",
                 parser.ctx.stdout,
-            );
+            ) catch |e| {
+                parser.ctx.stderr.print("Failed to print deubg info {}", .{e}) catch {};
+                parser.ctx.stderr.flush() catch {};
+            };
         }
     }
 
@@ -151,29 +155,29 @@ fn end_compiler() !*Function {
     return func;
 }
 
-fn parse_precedence(precedence: Precedence) !void {
-    try advance();
+fn parse_precedence(precedence: Precedence) Allocator.Error!void {
+    advance();
 
     const can_assign = @intFromEnum(precedence) <= @intFromEnum(Precedence.ASSIGNMENT);
 
     const prefix_rule = get_rule(parser.previous.token_type).prefix orelse {
-        try err("Expected expression.");
+        err("Expected expression.");
         return;
     };
     try prefix_rule(can_assign);
 
     while (@intFromEnum(precedence) <= @intFromEnum(get_rule(parser.current.token_type).precedence)) {
-        try advance();
+        advance();
         const infix_rule = get_rule(parser.previous.token_type).infix;
         try infix_rule.?(can_assign);
     }
 
-    if (can_assign and try match(TokenType.EQUAL)) {
-        try err("Invalid assignment target.");
+    if (can_assign and match(TokenType.EQUAL)) {
+        err("Invalid assignment target.");
     }
 }
 
-fn literal(_: bool) !void {
+fn literal(_: bool) Allocator.Error!void {
     switch (parser.previous.token_type) {
         TokenType.FALSE => try emit_byte(OpCode.FALSE),
         TokenType.NIL => try emit_byte(OpCode.NIL),
@@ -182,7 +186,7 @@ fn literal(_: bool) !void {
     }
 }
 
-fn binary(_: bool) !void {
+fn binary(_: bool) Allocator.Error!void {
     const operator_type = parser.previous.token_type;
     const rule = get_rule(operator_type);
     try parse_precedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
@@ -202,7 +206,7 @@ fn binary(_: bool) !void {
     }
 }
 
-fn unary(_: bool) !void {
+fn unary(_: bool) Allocator.Error!void {
     const operator_type = parser.previous.token_type;
 
     try parse_precedence(Precedence.UNARY);
@@ -214,109 +218,109 @@ fn unary(_: bool) !void {
     }
 }
 
-fn grouping(_: bool) !void {
+fn grouping(_: bool) Allocator.Error!void {
     try expression();
-    try consume(TokenType.RIGHT_PAREN, "Expect ')' after expression.");
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after expression.");
 }
 
-fn call(_: bool) !void {
+fn call(_: bool) Allocator.Error!void {
     const arg_count = try argument_list();
     try emit_bytes(OpCode.CALL, arg_count);
 }
 
-fn argument_list() !u8 {
+fn argument_list() Allocator.Error!u8 {
     var arg_count: u8 = 0;
     if (!check(TokenType.RIGHT_PAREN)) {
         while (true) {
             try expression();
 
             if (arg_count == 255) {
-                try err("Can't have more than 255 arguments.");
+                err("Can't have more than 255 arguments.");
             }
             arg_count += 1;
 
-            if (!try match(TokenType.COMMA)) {
+            if (!match(TokenType.COMMA)) {
                 break;
             }
         }
     }
-    try consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
     return arg_count;
 }
 
-fn @"and"(_: bool) !void {
+fn @"and"(_: bool) Allocator.Error!void {
     const end_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
     try emit_byte(OpCode.POP);
     try parse_precedence(Precedence.AND);
-    try patch_jump(end_jump);
+    patch_jump(end_jump);
 }
 
-fn @"or"(_: bool) !void {
+fn @"or"(_: bool) Allocator.Error!void {
     const else_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
     const end_jump = try emit_jump(OpCode.JUMP);
 
-    try patch_jump(else_jump);
+    patch_jump(else_jump);
     try emit_byte(OpCode.POP);
 
     try parse_precedence(Precedence.OR);
-    try patch_jump(end_jump);
+    patch_jump(end_jump);
 }
 
-fn expression() !void {
+fn expression() Allocator.Error!void {
     try parse_precedence(Precedence.ASSIGNMENT);
 }
 
-fn expression_statement() !void {
+fn expression_statement() Allocator.Error!void {
     try expression();
-    try consume(TokenType.SEMICOLON, "Expect ';' after expression.");
+    consume(TokenType.SEMICOLON, "Expect ';' after expression.");
     try emit_byte(OpCode.POP);
 }
 
-fn declaration() anyerror!void { // 'unable to resolve inferred error set' without `anyerror` - TODO look into that
-    if (try match(TokenType.FN)) {
+fn declaration() Allocator.Error!void {
+    if (match(TokenType.FN)) {
         try fn_declaration();
-    } else if (try match(TokenType.VAR)) {
+    } else if (match(TokenType.VAR)) {
         try var_declaration();
     } else {
         try statement();
     }
 
     if (parser.panic_mode) {
-        try synchronize();
+        synchronize();
     }
 }
 
-fn fn_declaration() !void {
+fn fn_declaration() Allocator.Error!void {
     const global = try parse_variable("Expect function name.");
     mark_initialized();
     try function(FnType.FUNCTION);
     try define_variable(global);
 }
 
-fn function(fn_type: FnType) !void {
+fn function(fn_type: FnType) Allocator.Error!void {
     var compiler: Compiler = undefined;
     try init_compiler(&compiler, parser.vm, fn_type, current);
     begin_scope();
 
-    try consume(TokenType.LEFT_PAREN, "Expect '(' after function name.");
+    consume(TokenType.LEFT_PAREN, "Expect '(' after function name.");
 
     if (!check(TokenType.RIGHT_PAREN)) {
         while (true) {
             current.function.arity += 1;
             if (current.function.arity > 255) {
-                try error_at_current("Can't have more than 255 parameters");
+                error_at_current("Can't have more than 255 parameters");
             }
             const constant = try parse_variable("Expect parameter name.");
             try define_variable(constant);
 
-            if (!try match(TokenType.COMMA)) {
+            if (!match(TokenType.COMMA)) {
                 break;
             }
         }
     }
 
-    try consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.");
-    try consume(TokenType.LEFT_BRACE, "Expect '{' before function body.");
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.");
+    consume(TokenType.LEFT_BRACE, "Expect '{' before function body.");
     try block();
 
     // end_scope not required, as the compiler is ended in the next line anyways
@@ -332,20 +336,20 @@ fn function(fn_type: FnType) !void {
     }
 }
 
-fn var_declaration() !void {
+fn var_declaration() Allocator.Error!void {
     const global = try parse_variable("Expect variable name.");
 
-    if (try match(TokenType.EQUAL)) {
+    if (match(TokenType.EQUAL)) {
         try expression();
     } else {
         try emit_byte(OpCode.NIL);
     }
-    try consume(TokenType.SEMICOLON, "Expect ';' after variable declaration.");
+    consume(TokenType.SEMICOLON, "Expect ';' after variable declaration.");
 
     try define_variable(global);
 }
 
-fn define_variable(global: u8) !void {
+fn define_variable(global: u8) Allocator.Error!void {
     if (current.scope_depth > 0) {
         mark_initialized();
         return;
@@ -361,7 +365,7 @@ fn mark_initialized() void {
     current.locals[current.local_count - 1].depth = current.scope_depth;
 }
 
-fn declare_variable() !void {
+fn declare_variable() void {
     if (current.scope_depth == 0) {
         return;
     }
@@ -377,16 +381,16 @@ fn declare_variable() !void {
         }
 
         if (std.mem.eql(u8, name.token, local.name.token)) {
-            try err("Already a variable with this name in this scope.");
+            err("Already a variable with this name in this scope.");
         }
     }
 
-    try add_local(name);
+    add_local(name);
 }
 
-fn add_local(name: *Token) !void {
+fn add_local(name: *Token) void {
     if (current.local_count == Compiler.MAx_LOCAL_COUNT) {
-        try err("Too many local variables in function.");
+        err("Too many local variables in function.");
         return;
     }
 
@@ -398,34 +402,34 @@ fn add_local(name: *Token) !void {
     local.is_captured = false;
 }
 
-fn parse_variable(comptime error_message: []const u8) !u8 {
-    try consume(TokenType.IDENTIFIER, error_message);
+fn parse_variable(comptime error_message: []const u8) Allocator.Error!u8 {
+    consume(TokenType.IDENTIFIER, error_message);
 
-    try declare_variable();
+    declare_variable();
     if (current.scope_depth > 0) {
         return 0;
     }
 
-    return try identifier_constant(&parser.previous);
+    return identifier_constant(&parser.previous);
 }
 
-fn identifier_constant(name: *const Token) !u8 {
+fn identifier_constant(name: *const Token) Allocator.Error!u8 {
     const str = try objects.copy_string(parser.vm, name.token);
     return make_constant(.{ .object = @ptrCast(str) });
 }
 
-fn statement() anyerror!void {
-    if (try match(TokenType.PRINT)) {
+fn statement() Allocator.Error!void {
+    if (match(TokenType.PRINT)) {
         try print_statement();
-    } else if (try match(TokenType.IF)) {
+    } else if (match(TokenType.IF)) {
         try if_statement();
-    } else if (try match(TokenType.RETURN)) {
+    } else if (match(TokenType.RETURN)) {
         try return_statement();
-    } else if (try match(TokenType.WHILE)) {
+    } else if (match(TokenType.WHILE)) {
         try while_statement();
-    } else if (try match(TokenType.FOR)) {
+    } else if (match(TokenType.FOR)) {
         try for_statement();
-    } else if (try match(TokenType.LEFT_BRACE)) {
+    } else if (match(TokenType.LEFT_BRACE)) {
         begin_scope();
         try block();
         try end_scope();
@@ -434,28 +438,28 @@ fn statement() anyerror!void {
     }
 }
 
-fn return_statement() !void {
+fn return_statement() Allocator.Error!void {
     if (current.fn_type == FnType.SCRIPT) {
-        try err("Can't return from top-level code.");
+        err("Can't return from top-level code.");
     }
 
-    if (try match(TokenType.SEMICOLON)) {
+    if (match(TokenType.SEMICOLON)) {
         try emit_return();
     } else {
         try expression();
-        try consume(TokenType.SEMICOLON, "Expect ';' after return value.");
+        consume(TokenType.SEMICOLON, "Expect ';' after return value.");
         try emit_byte(OpCode.RETURN);
     }
 }
 
-fn for_statement() !void {
+fn for_statement() Allocator.Error!void {
     begin_scope();
 
     // Pre-loop
-    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'for'.");
-    if (try match(TokenType.SEMICOLON)) {
+    consume(TokenType.LEFT_PAREN, "Expect '(' after 'for'.");
+    if (match(TokenType.SEMICOLON)) {
         // No initializer.
-    } else if (try match(TokenType.VAR)) {
+    } else if (match(TokenType.VAR)) {
         try var_declaration();
     } else {
         try expression_statement();
@@ -465,25 +469,25 @@ fn for_statement() !void {
     var loop_start = current_chunk().code.items.len;
 
     var exit_jump: ?usize = null;
-    if (!try match(TokenType.SEMICOLON)) {
+    if (!match(TokenType.SEMICOLON)) {
         try expression();
-        try consume(TokenType.SEMICOLON, "Expect ';' after loop condition.");
+        consume(TokenType.SEMICOLON, "Expect ';' after loop condition.");
 
         exit_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
         try emit_byte(OpCode.POP);
     }
 
     // Post-loop
-    if (!try match(TokenType.RIGHT_PAREN)) {
+    if (!match(TokenType.RIGHT_PAREN)) {
         const body_jump = try emit_jump(OpCode.JUMP);
         const post_loop_start = current_chunk().code.items.len;
         try expression();
         try emit_byte(OpCode.POP);
-        try consume(TokenType.RIGHT_PAREN, "Expect ')' after for clauses.");
+        consume(TokenType.RIGHT_PAREN, "Expect ')' after for clauses.");
 
         try emit_loop(loop_start);
         loop_start = post_loop_start;
-        try patch_jump(body_jump);
+        patch_jump(body_jump);
     }
 
     // Loop body
@@ -491,34 +495,34 @@ fn for_statement() !void {
     try emit_loop(loop_start);
 
     if (exit_jump) |jump| {
-        try patch_jump(jump);
+        patch_jump(jump);
         try emit_byte(OpCode.POP);
     }
 
     try end_scope();
 }
 
-fn while_statement() !void {
+fn while_statement() Allocator.Error!void {
     const loop_start = current_chunk().code.items.len;
-    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'while'.");
+    consume(TokenType.LEFT_PAREN, "Expect '(' after 'while'.");
     try expression();
-    try consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
 
     const exit_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
     try emit_byte(OpCode.POP);
     try statement();
     try emit_loop(loop_start);
 
-    try patch_jump(exit_jump);
+    patch_jump(exit_jump);
     try emit_byte(OpCode.POP);
 }
 
-fn emit_loop(loop_start: usize) !void {
+fn emit_loop(loop_start: usize) Allocator.Error!void {
     try emit_byte(OpCode.LOOP);
 
     const offset = current_chunk().code.items.len - loop_start + 2;
     if (offset > std.math.maxInt(u16)) {
-        try err("Loop body too large.");
+        err("Loop body too large.");
     }
 
     const high: u8 = @truncate(offset >> 8);
@@ -527,10 +531,10 @@ fn emit_loop(loop_start: usize) !void {
     try emit_byte(low);
 }
 
-fn if_statement() !void {
-    try consume(TokenType.LEFT_PAREN, "Expect '(' after 'if'.");
+fn if_statement() Allocator.Error!void {
+    consume(TokenType.LEFT_PAREN, "Expect '(' after 'if'.");
     try expression();
-    try consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after condition.");
 
     const then_jump = try emit_jump(OpCode.JUMP_IF_FALSE);
     try emit_byte(OpCode.POP);
@@ -538,29 +542,29 @@ fn if_statement() !void {
 
     const else_jump = try emit_jump(OpCode.JUMP);
 
-    try patch_jump(then_jump);
+    patch_jump(then_jump);
     try emit_byte(OpCode.POP);
 
-    if (try match(TokenType.ELSE)) {
+    if (match(TokenType.ELSE)) {
         try statement();
     }
 
-    try patch_jump(else_jump);
+    patch_jump(else_jump);
 }
 
-fn emit_jump(instruction: OpCode) !usize {
+fn emit_jump(instruction: OpCode) Allocator.Error!usize {
     try emit_byte(instruction);
     try emit_byte(0xFF);
     try emit_byte(0xFF);
     return current_chunk().code.items.len - 2;
 }
 
-fn patch_jump(offset: usize) !void {
+fn patch_jump(offset: usize) void {
     // -2 to adjust for the bytecode for the jump offset itself.
     const jump = current_chunk().code.items.len - offset - 2;
 
     if (jump > std.math.maxInt(u16)) {
-        try err("Too much code to jump over.");
+        err("Too much code to jump over.");
     }
 
     current_chunk().code.items[offset] = @truncate(jump >> 8);
@@ -571,7 +575,7 @@ fn begin_scope() void {
     current.scope_depth += 1;
 }
 
-fn end_scope() !void {
+fn end_scope() Allocator.Error!void {
     current.scope_depth -= 1;
 
     while (current.local_count > 0) {
@@ -590,21 +594,21 @@ fn end_scope() !void {
     }
 }
 
-fn block() !void {
+fn block() Allocator.Error!void {
     while (!check(TokenType.RIGHT_BRACE) and !check(TokenType.EOF)) {
         try declaration();
     }
 
-    try consume(TokenType.RIGHT_BRACE, "Expect '}' after block.");
+    consume(TokenType.RIGHT_BRACE, "Expect '}' after block.");
 }
 
-fn print_statement() !void {
+fn print_statement() Allocator.Error!void {
     try expression();
-    try consume(TokenType.SEMICOLON, "Expect ';' after value.");
+    consume(TokenType.SEMICOLON, "Expect ';' after value.");
     try emit_byte(OpCode.PRINT);
 }
 
-fn synchronize() !void {
+fn synchronize() void {
     parser.panic_mode = false;
 
     while (parser.current.token_type != TokenType.EOF) {
@@ -629,16 +633,18 @@ fn synchronize() !void {
             },
         }
 
-        try advance();
+        advance();
     }
 }
 
-fn number(_: bool) !void {
-    const value = try std.fmt.parseFloat(f64, parser.previous.token);
+fn number(_: bool) Allocator.Error!void {
+    const value = std.fmt.parseFloat(f64, parser.previous.token) catch {
+        return err("Failed to parse float. There is a bug in lexer implementation");
+    };
     try emit_constant(.{ .number = value });
 }
 
-fn string(_: bool) !void {
+fn string(_: bool) Allocator.Error!void {
     const len = parser.previous.token.len;
     const str = try objects.copy_string(parser.vm, parser.previous.token[1 .. len - 1]);
     const val = Value{ .object = @ptrCast(str) };
@@ -649,11 +655,11 @@ fn variable(can_assign: bool) !void {
     try named_variable(&parser.previous, can_assign);
 }
 
-fn named_variable(name: *const Token, can_assign: bool) !void {
+fn named_variable(name: *const Token, can_assign: bool) Allocator.Error!void {
     const arg, const get, const set = blk: {
-        if (try resolve_local(current, name)) |local| {
+        if (resolve_local(current, name)) |local| {
             break :blk .{ local, OpCode.GET_LOCAL, OpCode.SET_LOCAL };
-        } else if (try resolve_upvalue(current, name)) |upvalue| {
+        } else if (resolve_upvalue(current, name)) |upvalue| {
             break :blk .{ upvalue, OpCode.GET_UPVALUE, OpCode.SET_UPVALUE };
         } else {
             const global = try identifier_constant(name);
@@ -661,7 +667,7 @@ fn named_variable(name: *const Token, can_assign: bool) !void {
         }
     };
 
-    if (can_assign and try match(TokenType.EQUAL)) {
+    if (can_assign and match(TokenType.EQUAL)) {
         try expression();
         try emit_bytes(set, arg);
     } else {
@@ -669,14 +675,14 @@ fn named_variable(name: *const Token, can_assign: bool) !void {
     }
 }
 
-fn resolve_local(compiler: *Compiler, name: *const Token) !?u8 {
+fn resolve_local(compiler: *Compiler, name: *const Token) ?u8 {
     var i = compiler.local_count;
     while (i > 0) {
         i -= 1;
         const local = &compiler.locals[i];
         if (std.mem.eql(u8, name.token, local.name.token)) {
             if (local.depth == null) {
-                try err("Can't read local variable in its own initializer.");
+                err("Can't read local variable in its own initializer.");
             }
             return @truncate(i);
         }
@@ -684,19 +690,19 @@ fn resolve_local(compiler: *Compiler, name: *const Token) !?u8 {
     return null;
 }
 
-fn resolve_upvalue(compiler: *Compiler, name: *const Token) !?u8 {
+fn resolve_upvalue(compiler: *Compiler, name: *const Token) ?u8 {
     if (compiler.enclosing) |enclosing| {
-        if (try resolve_local(enclosing, name)) |local| {
+        if (resolve_local(enclosing, name)) |local| {
             enclosing.locals[local].is_captured = true;
             return add_upvalue(compiler, local, true);
-        } else if (try resolve_upvalue(enclosing, name)) |upvalue| {
+        } else if (resolve_upvalue(enclosing, name)) |upvalue| {
             return add_upvalue(compiler, upvalue, false);
         }
     }
     return null;
 }
 
-fn add_upvalue(compiler: *Compiler, index: u8, is_local: bool) !?u8 {
+fn add_upvalue(compiler: *Compiler, index: u8, is_local: bool) ?u8 {
     const count = compiler.function.upvalue_count;
 
     for (0..count) |i| {
@@ -707,7 +713,7 @@ fn add_upvalue(compiler: *Compiler, index: u8, is_local: bool) !?u8 {
     }
 
     if (count == Compiler.MAX_UPVALUE_COUNT) {
-        try err("Too many closure variables in function.");
+        err("Too many closure variables in function.");
         return 0;
     }
 
@@ -793,36 +799,36 @@ fn current_chunk() *Chunk {
     return &current.function.chunk;
 }
 
-fn emit_byte(byte: anytype) !void {
-    try current_chunk().write_byte(byte, parser.previous.line);
+fn emit_byte(byte: anytype) Allocator.Error!void {
+    try current_chunk().write_byte(parser.ctx.allocator, byte, parser.previous.line);
 }
 
-fn emit_bytes(byte1: anytype, byte2: anytype) !void {
+fn emit_bytes(byte1: anytype, byte2: anytype) Allocator.Error!void {
     try emit_byte(byte1);
     try emit_byte(byte2);
 }
 
-fn emit_return() !void {
+fn emit_return() Allocator.Error!void {
     try emit_byte(OpCode.NIL);
     try emit_byte(OpCode.RETURN);
 }
 
-fn emit_constant(value: Value) !void {
+fn emit_constant(value: Value) Allocator.Error!void {
     try emit_bytes(OpCode.CONSTANT, try make_constant(value));
 }
 
-fn make_constant(value: Value) !u8 {
-    const constant = try current_chunk().add_constant(value);
+fn make_constant(value: Value) Allocator.Error!u8 {
+    const constant = try current_chunk().add_constant(parser.ctx.allocator, value);
 
     if (constant > std.math.maxInt(u8)) {
-        try err("Too many constants in one chunk.");
+        err("Too many constants in one chunk.");
         return 0;
     }
 
     return @truncate(constant);
 }
 
-fn advance() !void {
+fn advance() void {
     parser.previous = parser.current;
 
     while (true) {
@@ -832,15 +838,15 @@ fn advance() !void {
             break;
         }
 
-        try error_at_current(parser.current.token);
+        error_at_current(parser.current.token);
     }
 }
 
-fn consume(token_type: TokenType, message: []const u8) !void {
+fn consume(token_type: TokenType, message: []const u8) void {
     if (parser.current.token_type == token_type) {
-        try advance();
+        advance();
     } else {
-        try error_at_current(message);
+        error_at_current(message);
     }
 }
 
@@ -848,23 +854,23 @@ fn check(token_type: TokenType) bool {
     return parser.current.token_type == token_type;
 }
 
-fn match(token_type: TokenType) !bool {
+fn match(token_type: TokenType) bool {
     if (!check(token_type)) {
         return false;
     }
-    try advance();
+    advance();
     return true;
 }
 
-fn error_at_current(message: []const u8) !void {
+fn error_at_current(message: []const u8) void {
     return error_at(parser.current, message);
 }
 
-fn err(message: []const u8) !void {
+fn err(message: []const u8) void {
     return error_at(parser.previous, message);
 }
 
-fn error_at(token: Token, message: []const u8) !void {
+fn error_at(token: Token, message: []const u8) void {
     if (parser.panic_mode) {
         return;
     }
@@ -872,16 +878,17 @@ fn error_at(token: Token, message: []const u8) !void {
 
     const stderr = parser.ctx.stderr;
 
-    try stderr.print("[line {d}] Error", .{token.line});
+    stderr.print("[line {d}] Error", .{token.line}) catch {};
 
     if (token.token_type == TokenType.EOF) {
-        try stderr.print(" at end", .{});
+        stderr.print(" at end", .{}) catch {};
     } else if (token.token_type == TokenType.ERROR) {
         // Do nothing
     } else {
-        try stderr.print(" at '{s}'", .{token.token});
+        stderr.print(" at '{s}'", .{token.token}) catch {};
     }
 
-    try stderr.print(": {s}\n", .{message});
+    stderr.print(": {s}\n", .{message}) catch {};
+    stderr.flush() catch {};
     parser.had_error = true;
 }

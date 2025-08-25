@@ -2,6 +2,8 @@ const std = @import("std");
 
 const values = @import("values.zig");
 
+const Allocator = std.mem.Allocator;
+
 pub const OpCode = enum(u8) {
     CONSTANT,
     NIL,
@@ -41,21 +43,21 @@ pub const Chunk = struct {
     lines: std.ArrayList(u32),
     constants: std.ArrayList(values.Value),
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init() Self {
         return Self{
-            .code = std.ArrayList(u8).init(allocator),
-            .lines = std.ArrayList(u32).init(allocator),
-            .constants = std.ArrayList(values.Value).init(allocator),
+            .code = std.ArrayList(u8).empty,
+            .lines = std.ArrayList(u32).empty,
+            .constants = std.ArrayList(values.Value).empty,
         };
     }
 
-    pub fn deinit(self: Self) void {
-        self.code.deinit();
-        self.lines.deinit();
-        self.constants.deinit();
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        self.code.deinit(allocator);
+        self.lines.deinit(allocator);
+        self.constants.deinit(allocator);
     }
 
-    pub fn write_byte(self: *Self, val: anytype, line: usize) !void {
+    pub fn write_byte(self: *Self, allocator: Allocator, val: anytype, line: usize) !void {
         const T = @TypeOf(val);
         const byte: u8 = switch (T) {
             u1, u8 => val,
@@ -64,12 +66,12 @@ pub const Chunk = struct {
             OpCode => @intFromEnum(val),
             else => @compileError("Type must be an unsigned integer or chunks.OpCode, got " ++ @typeName(T)),
         };
-        try self.code.append(byte);
-        try self.lines.append(@truncate(line));
+        try self.code.append(allocator, byte);
+        try self.lines.append(allocator, @truncate(line));
     }
 
-    pub fn add_constant(self: *Self, val: values.Value) !usize {
-        try self.constants.append(val);
+    pub fn add_constant(self: *Self, allocator: Allocator, val: values.Value) !usize {
+        try self.constants.append(allocator, val);
         const offset = self.constants.items.len - 1;
         return offset;
     }

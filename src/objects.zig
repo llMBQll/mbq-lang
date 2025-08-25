@@ -110,7 +110,7 @@ pub fn new_function(vm: *VM) !*Function {
     const function = try allocate(vm, Function);
     function.arity = 0;
     function.upvalue_count = 0;
-    function.chunk = try Chunk.init(vm.ctx.allocator);
+    function.chunk = Chunk.init();
     function.name = null;
     return function;
 }
@@ -152,7 +152,7 @@ fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
     str.chars = chars;
     str.hash = hash;
 
-    _ = try vm.strings.set(str, .nil);
+    _ = try vm.strings.set(vm.ctx.allocator, str, .nil);
 
     return str;
 }
@@ -189,12 +189,12 @@ pub fn deallocate(vm: *VM, obj: *Obj) void {
     switch (obj.obj_type) {
         ObjType.CLOSURE => {
             const closure: *Closure = @ptrCast(obj);
-            closure.upvalues.deinit();
+            closure.upvalues.deinit(allocator);
             allocator.destroy(closure);
         },
         ObjType.FUNCTION => {
             const function: *Function = @ptrCast(obj);
-            function.chunk.deinit();
+            function.chunk.deinit(allocator);
             allocator.destroy(function);
         },
         ObjType.NATIVE => {

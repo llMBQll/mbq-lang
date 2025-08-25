@@ -8,14 +8,24 @@ const VM = @import("vm.zig").VM;
 const OpCode = chunks.OpCode;
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    var stdin_buffer: [1024]u8 = undefined;
+    var stdin_writer = std.fs.File.stdin().reader(&stdin_buffer);
+    const stdin = &stdin_writer.interface;
 
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(general_purpose_allocator.deinit() == .ok);
     const allocator = general_purpose_allocator.allocator();
 
     const ctx = context.Context{
+        .stdin = stdin,
         .stdout = stdout,
         .stderr = stderr,
         .allocator = allocator,
@@ -24,11 +34,11 @@ pub fn main() !void {
     var argv_iterator = try std.process.argsWithAllocator(allocator);
     defer argv_iterator.deinit();
 
-    var argv = std.ArrayList([:0]const u8).init(allocator);
-    defer argv.deinit();
+    var argv = std.ArrayList([:0]const u8).empty;
+    defer argv.deinit(allocator);
 
     while (argv_iterator.next()) |arg| {
-        try argv.append(arg);
+        try argv.append(allocator, arg);
     }
 
     const argc = argv.items.len;
@@ -49,20 +59,31 @@ pub fn main() !void {
 }
 
 fn repl(ctx: context.Context) !void {
-    const stdin = std.io.getStdIn().reader();
-
     var vm = try VM.init(ctx);
     defer vm.deinit();
 
-    var buf: [1024]u8 = undefined;
+    const stdin = ctx.stdin;
+    const stdout = ctx.stdout;
+    const stderr = ctx.stderr;
 
     while (true) {
-        try ctx.stdout.print("> ", .{});
+        try stdout.print("> ", .{});
+        try stdout.flush();
 
-        const line = try stdin.readUntilDelimiterOrEof(&buf, '\n') orelse {
-            try ctx.stdout.print("\n", .{});
+        const line = stdin.takeDelimiterExclusive('\n') catch |err| {
+            const Error = std.io.Reader.DelimiterError;
+            try stdout.print("\n", .{});
+            try stdout.flush();
+            switch (err) {
+                Error.ReadFailed, Error.StreamTooLong => {
+                    stderr.print("{}\n", .{err}) catch {};
+                    stderr.flush() catch {};
+                },
+                Error.EndOfStream => {},
+            }
             break;
         };
+
         try vm.interpret(line);
     }
 }

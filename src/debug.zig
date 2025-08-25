@@ -16,6 +16,7 @@ pub fn disassemble_chunk(chunk: *chunks.Chunk, name: []const u8, stdout: anytype
     }
 
     try stdout.print("== {s} end ==\n", .{name});
+    try stdout.flush();
 }
 
 pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
