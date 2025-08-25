@@ -1,13 +1,14 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
-const context = @import("context.zig");
+const memory_mod = @import("memory.zig");
 const compiler = @import("compiler.zig");
 const debug = @import("debug.zig");
 const objects = @import("objects.zig");
 const table = @import("table.zig");
 const values = @import("values.zig");
 
+const Allocator = std.mem.Allocator;
 const Chunk = chunks.Chunk;
 const Object = objects.Object;
 const ObjectType = objects.ObjectType;
@@ -20,6 +21,7 @@ const String = objects.String;
 const Table = table.Table;
 const Value = values.Value;
 const ValueType = values.ValueType;
+const Memory = memory_mod.Memory;
 
 const DEBUG_TRACING = false;
 
@@ -42,9 +44,12 @@ pub const VM = struct {
     open_upvalues: ?*objects.Upvalue,
     globals: Table,
     strings: Table,
-    ctx: context.Context,
+    stdin: *std.Io.Reader,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    memory: Memory,
 
-    pub fn init(ctx: context.Context) !Self {
+    pub fn init(stdin: *std.Io.Reader, stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: Allocator) !Self {
         var self = Self{
             .frames = CallStack.init(),
             .stack = Stack.init(),
@@ -52,7 +57,10 @@ pub const VM = struct {
             .open_upvalues = null,
             .globals = Table.init(),
             .strings = Table.init(),
-            .ctx = ctx,
+            .stdin = stdin,
+            .stdout = stdout,
+            .stderr = stderr,
+            .memory = Memory.init(allocator),
         };
 
         try self.define_native("clock", clock_native);
@@ -61,8 +69,8 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.globals.deinit(self.ctx.allocator);
-        self.strings.deinit(self.ctx.allocator);
+        self.globals.deinit(&self.memory);
+        self.strings.deinit(&self.memory);
 
         var current = self.object_list;
         while (current) |obj| {
@@ -88,16 +96,16 @@ pub const VM = struct {
     }
 
     fn run(self: *Self) !void {
-        const stdout = self.ctx.stdout;
-        const allocator = self.ctx.allocator;
+        const stdout = self.stdout;
+        const memory = &self.memory;
 
         var frame = self.frames.top();
 
         while (true) {
             if (comptime DEBUG_TRACING) {
                 self.disassemble_current_instruction(frame) catch |e| {
-                    self.ctx.stderr.print("Failed to debug current instruction {}", .{e}) catch {};
-                    self.ctx.stderr.flush() catch {};
+                    self.stderr.print("Failed to debug current instruction {}", .{e}) catch {};
+                    self.stderr.flush() catch {};
                 };
             }
 
@@ -129,11 +137,11 @@ pub const VM = struct {
                 },
                 OpCode.DEFINE_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    _ = try self.globals.set(allocator, name, self.stack.pop());
+                    _ = try self.globals.set(memory, name, self.stack.pop());
                 },
                 OpCode.SET_GLOBAL => {
                     const name: *String = @ptrCast(read_constant(frame).object);
-                    const is_new = try self.globals.set(allocator, name, self.stack.peek(0).*);
+                    const is_new = try self.globals.set(memory, name, self.stack.peek(0).*);
                     if (is_new) {
                         _ = self.globals.delete(name);
                         return self.runtime_error("Undefined variable '{s}'.", .{name.chars});
@@ -215,6 +223,7 @@ pub const VM = struct {
                 OpCode.PRINT => {
                     try self.stack.pop().print(stdout);
                     try stdout.print("\n", .{});
+                    try stdout.flush();
                 },
                 OpCode.JUMP => {
                     const offset = read_short(frame);
@@ -293,7 +302,7 @@ pub const VM = struct {
     }
 
     fn runtime_error(self: *Self, comptime format: []const u8, args: anytype) InterpretError {
-        const stderr = self.ctx.stderr;
+        const stderr = self.stderr;
 
         stderr.print(format, args) catch {};
         stderr.print("\n", .{}) catch {};
@@ -324,7 +333,7 @@ pub const VM = struct {
         const a: *String = @ptrCast(self.stack.pop().object);
 
         const len = a.chars.len + b.chars.len;
-        const chars = try self.ctx.allocator.alloc(u8, len);
+        const chars = try self.memory.alloc(u8, len);
 
         std.mem.copyForwards(u8, chars[0..a.chars.len], a.chars);
         std.mem.copyForwards(u8, chars[a.chars.len..len], b.chars);
@@ -340,7 +349,7 @@ pub const VM = struct {
         self.stack.push(.{ .object = @ptrCast(str) });
         self.stack.push(.{ .object = @ptrCast(func) });
 
-        _ = try self.globals.set(self.ctx.allocator, str, self.stack.peek(0).*);
+        _ = try self.globals.set(&self.memory, str, self.stack.peek(0).*);
 
         _ = self.stack.pop();
         _ = self.stack.pop();
@@ -411,7 +420,7 @@ pub const VM = struct {
     }
 
     fn disassemble_current_instruction(self: *const Self, frame: *const CallFrame) !void {
-        const stdout = self.ctx.stdout;
+        const stdout = self.stdout;
 
         try stdout.print("          ", .{});
         if (self.stack.len == 0) {

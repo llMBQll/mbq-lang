@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const array = @import("array.zig");
+const memory = @import("memory.zig");
 const debug = @import("debug.zig");
 const chunks = @import("chunks.zig");
 const lexer_mod = @import("lexer.zig");
@@ -8,6 +10,8 @@ const values = @import("values.zig");
 const vm_mod = @import("vm.zig");
 
 const Allocator = std.mem.Allocator;
+const Array = array.Array;
+const Memory = memory.Memory;
 const Chunk = chunks.Chunk;
 const Lexer = lexer_mod.Lexer;
 const OpCode = chunks.OpCode;
@@ -22,21 +26,21 @@ pub const Table = struct {
 
     const MAX_LOAD = 0.75;
 
-    entries: std.ArrayList(Entry),
+    entries: Array(Entry),
     count: usize,
 
     pub fn init() Self {
         return .{
-            .entries = std.ArrayList(Entry).empty,
+            .entries = Array(Entry).empty,
             .count = 0,
         };
     }
 
-    pub fn deinit(self: *Self, allocator: Allocator) void {
-        self.entries.deinit(allocator);
+    pub fn deinit(self: *Self, mem: *Memory) void {
+        self.entries.deinit(mem);
     }
 
-    fn find_entry(entries: *std.ArrayList(Entry), key: *String) *Entry {
+    fn find_entry(entries: *Array(Entry), key: *String) *Entry {
         var index = key.hash % entries.capacity;
         var tombstone: ?*Entry = null;
 
@@ -62,10 +66,10 @@ pub const Table = struct {
         }
     }
 
-    fn adjust_capacity(self: *Self, allocator: Allocator, capacity: usize) !void {
-        var new_entries = try std.ArrayList(Entry).initCapacity(allocator, capacity);
+    fn adjust_capacity(self: *Self, mem: *Memory, capacity: usize) !void {
+        var new_entries = try Array(Entry).init_with_capacity(mem, capacity);
         for (0..capacity) |_| {
-            new_entries.appendAssumeCapacity(.{
+            new_entries.append_assume_capacity(.{
                 .key = null,
                 .value = .nil,
             });
@@ -84,19 +88,17 @@ pub const Table = struct {
             }
         }
 
-        self.entries.deinit(allocator);
+        self.entries.deinit(mem);
         self.entries = new_entries;
         self.count = count;
     }
 
-    pub fn set(self: *Self, allocator: Allocator, key: *String, value: Value) !bool {
+    pub fn set(self: *Self, mem: *Memory, key: *String, value: Value) !bool {
         const load: f64 = @floatFromInt(self.entries.items.len + 1);
         const capacity: f64 = @floatFromInt(self.entries.capacity);
 
         if (load > capacity * Self.MAX_LOAD) {
-            const old_capacity = self.entries.capacity;
-            const new_capacity = if (old_capacity < 8) 8 else old_capacity * 2;
-            try self.adjust_capacity(allocator, new_capacity);
+            try self.adjust_capacity(mem, Memory.grow_capacity(self.entries.capacity));
         }
 
         const entry = find_entry(&self.entries, key);

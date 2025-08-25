@@ -1,10 +1,12 @@
 const std = @import("std");
 
+const array = @import("array.zig");
 const chunks = @import("chunks.zig");
 const values = @import("values.zig");
 const vm_mod = @import("vm.zig");
 
 const Allocator = std.mem.Allocator;
+const Array = array.Array;
 const Chunk = chunks.Chunk;
 const Value = values.Value;
 const ValueType = values.ValueType;
@@ -99,7 +101,7 @@ pub const Closure = struct {
 
     object: Object,
     function: *Function,
-    upvalues: std.ArrayList(?*Upvalue),
+    upvalues: Array(?*Upvalue),
 };
 
 pub fn is(value: *Value, @"type": ObjectType) bool {
@@ -129,7 +131,7 @@ pub fn copy_string(vm: *VM, chars_in: []const u8) !*String {
         return str;
     }
 
-    const chars = try vm.ctx.allocator.alloc(u8, chars_in.len);
+    const chars = try vm.memory.alloc(u8, chars_in.len);
     std.mem.copyForwards(u8, chars, chars_in);
 
     return allocate_string(vm, chars, hash);
@@ -140,7 +142,7 @@ pub fn take_string(vm: *VM, chars: []const u8) !*String {
 
     const interned = vm.strings.find_string(chars, hash);
     if (interned) |str| {
-        vm.ctx.allocator.free(chars);
+        vm.memory.free(chars);
         return str;
     }
 
@@ -152,7 +154,7 @@ fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
     str.chars = chars;
     str.hash = hash;
 
-    _ = try vm.strings.set(vm.ctx.allocator, str, .nil);
+    _ = try vm.strings.set(&vm.memory, str, .nil);
 
     return str;
 }
@@ -169,8 +171,10 @@ fn hash_string(key: []const u8) u32 {
 pub fn new_closure(vm: *VM, function: *Function) !*Closure {
     const closure = try allocate(vm, Closure);
     closure.function = function;
-    closure.upvalues = try std.ArrayList(?*Upvalue).initCapacity(vm.ctx.allocator, function.upvalue_count);
-    closure.upvalues.appendNTimesAssumeCapacity(null, function.upvalue_count);
+    closure.upvalues = try Array(?*Upvalue).init_with_capacity(&vm.memory, function.upvalue_count);
+    for (0..function.upvalue_count) |_| {
+        closure.upvalues.append_assume_capacity(null);
+    }
     return closure;
 }
 
@@ -183,7 +187,7 @@ pub fn new_upvalue(vm: *VM, slot: *Value) !*Upvalue {
 }
 
 fn allocate(vm: *VM, comptime T: type) !*T {
-    const object = try vm.ctx.allocator.create(T);
+    const object = try vm.memory.create(T);
 
     object.object.type = T.Type;
     object.object.next = vm.object_list;
@@ -193,31 +197,31 @@ fn allocate(vm: *VM, comptime T: type) !*T {
 }
 
 pub fn deallocate(vm: *VM, obj: *Object) void {
-    const allocator = vm.ctx.allocator;
+    var memory = vm.memory;
 
     switch (obj.type) {
         ObjectType.CLOSURE => {
             const closure: *Closure = @ptrCast(obj);
-            closure.upvalues.deinit(allocator);
-            allocator.destroy(closure);
+            closure.upvalues.deinit(&memory);
+            memory.destroy(closure);
         },
         ObjectType.FUNCTION => {
             const function: *Function = @ptrCast(obj);
-            function.chunk.deinit(allocator);
-            allocator.destroy(function);
+            function.chunk.deinit(&memory);
+            memory.destroy(function);
         },
         ObjectType.NATIVE => {
             const native: *Native = @ptrCast(obj);
-            allocator.destroy(native);
+            memory.destroy(native);
         },
         ObjectType.STRING => {
             const str: *String = @ptrCast(obj);
-            allocator.free(str.chars);
-            allocator.destroy(str);
+            memory.free(str.chars);
+            memory.destroy(str);
         },
         ObjectType.UPVALUE => {
             const upvalue: *Upvalue = @ptrCast(obj);
-            allocator.destroy(upvalue);
+            memory.destroy(upvalue);
         },
     }
 }

@@ -1,8 +1,13 @@
 const std = @import("std");
 
+const array = @import("array.zig");
+const memory = @import("memory.zig");
 const values = @import("values.zig");
 
 const Allocator = std.mem.Allocator;
+const Array = array.Array;
+const Memory = memory.Memory;
+const x = std.ArrayList;
 
 pub const OpCode = enum(u8) {
     CONSTANT,
@@ -39,25 +44,25 @@ pub const OpCode = enum(u8) {
 pub const Chunk = struct {
     const Self = @This();
 
-    code: std.ArrayList(u8),
-    lines: std.ArrayList(u32),
-    constants: std.ArrayList(values.Value),
+    code: Array(u8),
+    lines: Array(u32),
+    constants: Array(values.Value),
 
     pub fn init() Self {
         return Self{
-            .code = std.ArrayList(u8).empty,
-            .lines = std.ArrayList(u32).empty,
-            .constants = std.ArrayList(values.Value).empty,
+            .code = Array(u8).empty,
+            .lines = Array(u32).empty,
+            .constants = Array(values.Value).empty,
         };
     }
 
-    pub fn deinit(self: *Self, allocator: Allocator) void {
-        self.code.deinit(allocator);
-        self.lines.deinit(allocator);
-        self.constants.deinit(allocator);
+    pub fn deinit(self: *Self, mem: *Memory) void {
+        self.code.deinit(mem);
+        self.lines.deinit(mem);
+        self.constants.deinit(mem);
     }
 
-    pub fn write_byte(self: *Self, allocator: Allocator, val: anytype, line: usize) !void {
+    pub fn write_byte(self: *Self, mem: *Memory, val: anytype, line: usize) !void {
         const T = @TypeOf(val);
         const byte: u8 = switch (T) {
             u1, u8 => val,
@@ -66,12 +71,12 @@ pub const Chunk = struct {
             OpCode => @intFromEnum(val),
             else => @compileError("Type must be an unsigned integer or chunks.OpCode, got " ++ @typeName(T)),
         };
-        try self.code.append(allocator, byte);
-        try self.lines.append(allocator, @truncate(line));
+        try self.code.append(mem, byte);
+        try self.lines.append(mem, @truncate(line));
     }
 
-    pub fn add_constant(self: *Self, allocator: Allocator, val: values.Value) !usize {
-        try self.constants.append(allocator, val);
+    pub fn add_constant(self: *Self, mem: *Memory, val: values.Value) !usize {
+        try self.constants.append(mem, val);
         const offset = self.constants.items.len - 1;
         return offset;
     }

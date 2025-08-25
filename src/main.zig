@@ -1,11 +1,12 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
-const context = @import("context.zig");
 const debug = @import("debug.zig");
+const memory_mod = @import("memory.zig");
 const VM = @import("vm.zig").VM;
 
 const OpCode = chunks.OpCode;
+const Memory = memory_mod.Memory;
 
 pub fn main() !void {
     var stdout_buffer: [1024]u8 = undefined;
@@ -24,13 +25,6 @@ pub fn main() !void {
     defer std.debug.assert(general_purpose_allocator.deinit() == .ok);
     const allocator = general_purpose_allocator.allocator();
 
-    const ctx = context.Context{
-        .stdin = stdin,
-        .stdout = stdout,
-        .stderr = stderr,
-        .allocator = allocator,
-    };
-
     var argv_iterator = try std.process.argsWithAllocator(allocator);
     defer argv_iterator.deinit();
 
@@ -42,14 +36,13 @@ pub fn main() !void {
     }
 
     const argc = argv.items.len;
-
     if (argc == 1) {
-        repl(ctx) catch |err| {
+        repl(stdin, stdout, stderr, allocator) catch |err| {
             try stdout.print("{}", .{err});
             std.process.exit(1);
         };
     } else if (argc == 2) {
-        run_file(ctx, argv.items[1]) catch |err| {
+        run_file(stdin, stdout, stderr, allocator, argv.items[1]) catch |err| {
             try stdout.print("{}", .{err});
             std.process.exit(2);
         };
@@ -58,13 +51,14 @@ pub fn main() !void {
     }
 }
 
-fn repl(ctx: context.Context) !void {
-    var vm = try VM.init(ctx);
+fn repl(
+    stdin: *std.Io.Reader,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
+    var vm = try VM.init(stdin, stdout, stderr, allocator);
     defer vm.deinit();
-
-    const stdin = ctx.stdin;
-    const stdout = ctx.stdout;
-    const stderr = ctx.stderr;
 
     while (true) {
         try stdout.print("> ", .{});
@@ -88,14 +82,20 @@ fn repl(ctx: context.Context) !void {
     }
 }
 
-fn run_file(ctx: context.Context, path: [:0]const u8) !void {
+fn run_file(
+    stdin: *std.Io.Reader,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    path: [:0]const u8,
+) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    const source = try file.readToEndAlloc(ctx.allocator, std.math.maxInt(usize));
-    defer ctx.allocator.free(source);
+    const source = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(source);
 
-    var vm = try VM.init(ctx);
+    var vm = try VM.init(stdin, stdout, stderr, allocator);
     defer vm.deinit();
 
     return vm.interpret(source);

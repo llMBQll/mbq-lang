@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
-const context = @import("context.zig");
 const debug = @import("debug.zig");
 const lexer_mod = @import("lexer.zig");
 const objects = @import("objects.zig");
@@ -26,7 +25,6 @@ const Parser = struct {
     had_error: bool,
     panic_mode: bool,
     vm: *VM,
-    ctx: context.Context,
 };
 
 const Compiler = struct {
@@ -92,7 +90,6 @@ pub fn compile(vm: *VM, source: []const u8) Allocator.Error!?*Function {
         .had_error = false,
         .panic_mode = false,
         .vm = vm,
-        .ctx = vm.ctx,
     };
 
     var compiler: Compiler = undefined;
@@ -142,10 +139,10 @@ fn end_compiler() Allocator.Error!*Function {
             debug.disassemble_chunk(
                 current_chunk(),
                 if (func.name) |name| name.chars else "<script>",
-                parser.ctx.stdout,
+                parser.vm.stdout,
             ) catch |e| {
-                parser.ctx.stderr.print("Failed to print deubg info {}", .{e}) catch {};
-                parser.ctx.stderr.flush() catch {};
+                parser.vm.stderr.print("Failed to print deubg info {}", .{e}) catch {};
+                parser.vm.stderr.flush() catch {};
             };
         }
     }
@@ -800,7 +797,7 @@ fn current_chunk() *Chunk {
 }
 
 fn emit_byte(byte: anytype) Allocator.Error!void {
-    try current_chunk().write_byte(parser.ctx.allocator, byte, parser.previous.line);
+    try current_chunk().write_byte(&parser.vm.memory, byte, parser.previous.line);
 }
 
 fn emit_bytes(byte1: anytype, byte2: anytype) Allocator.Error!void {
@@ -818,7 +815,7 @@ fn emit_constant(value: Value) Allocator.Error!void {
 }
 
 fn make_constant(value: Value) Allocator.Error!u8 {
-    const constant = try current_chunk().add_constant(parser.ctx.allocator, value);
+    const constant = try current_chunk().add_constant(&parser.vm.memory, value);
 
     if (constant > std.math.maxInt(u8)) {
         err("Too many constants in one chunk.");
@@ -876,7 +873,7 @@ fn error_at(token: Token, message: []const u8) void {
     }
     parser.panic_mode = true;
 
-    const stderr = parser.ctx.stderr;
+    const stderr = parser.vm.stderr;
 
     stderr.print("[line {d}] Error", .{token.line}) catch {};
 
