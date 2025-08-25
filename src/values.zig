@@ -2,7 +2,7 @@ const std = @import("std");
 
 const objects = @import("objects.zig");
 
-const Obj = objects.Obj;
+const Object = objects.Object;
 const String = objects.String;
 
 pub const ValueType = enum {
@@ -18,7 +18,7 @@ pub const Value = union(ValueType) {
     nil,
     bool: bool,
     number: f64,
-    object: *Obj,
+    object: *Object,
 
     pub fn tag(self: Self) ValueType {
         switch (self) {

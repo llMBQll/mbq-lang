@@ -9,8 +9,8 @@ const table = @import("table.zig");
 const values = @import("values.zig");
 
 const Chunk = chunks.Chunk;
-const Obj = objects.Obj;
-const ObjType = objects.ObjType;
+const Object = objects.Object;
+const ObjectType = objects.ObjectType;
 const Closure = objects.Closure;
 const Function = objects.Function;
 const Native = objects.Native;
@@ -33,10 +33,12 @@ pub const InterpretError = error{
 
 pub const VM = struct {
     const Self = @This();
+    const CallStack = FixedStack(CallFrame, FRAMES_MAX);
+    const Stack = FixedStack(Value, STACK_MAX);
 
-    frames: FixedStack(CallFrame, FRAMES_MAX),
-    stack: FixedStack(Value, STACK_MAX),
-    obj_list: ?*Obj,
+    frames: CallStack,
+    stack: Stack,
+    object_list: ?*Object,
     open_upvalues: ?*objects.Upvalue,
     globals: Table,
     strings: Table,
@@ -44,9 +46,9 @@ pub const VM = struct {
 
     pub fn init(ctx: context.Context) !Self {
         var self = Self{
-            .frames = FixedStack(CallFrame, FRAMES_MAX).init(),
-            .stack = FixedStack(Value, STACK_MAX).init(),
-            .obj_list = null,
+            .frames = CallStack.init(),
+            .stack = Stack.init(),
+            .object_list = null,
             .open_upvalues = null,
             .globals = Table.init(),
             .strings = Table.init(),
@@ -62,7 +64,7 @@ pub const VM = struct {
         self.globals.deinit(self.ctx.allocator);
         self.strings.deinit(self.ctx.allocator);
 
-        var current = self.obj_list;
+        var current = self.object_list;
         while (current) |obj| {
             const next = obj.next;
             objects.deallocate(self, obj);
@@ -173,7 +175,7 @@ pub const VM = struct {
                     self.stack.push(.{ .number = -self.stack.pop().number });
                 },
                 OpCode.ADD => {
-                    if (objects.is(self.stack.peek(0), ObjType.STRING) and objects.is(self.stack.peek(1), ObjType.STRING)) {
+                    if (objects.is(self.stack.peek(0), ObjectType.STRING) and objects.is(self.stack.peek(1), ObjectType.STRING)) {
                         try self.concatenate();
                     } else if (self.stack.peek(0).tag() == ValueType.number and self.stack.peek(1).tag() == ValueType.number) {
                         const b = self.stack.pop().number;
@@ -346,9 +348,9 @@ pub const VM = struct {
 
     fn call_value(self: *Self, callee: Value, arg_count: u8) InterpretError!void {
         if (callee.tag() == ValueType.object) {
-            switch (callee.object.obj_type) {
-                ObjType.CLOSURE => return self.call(@ptrCast(callee.object), arg_count),
-                ObjType.NATIVE => {
+            switch (callee.object.type) {
+                ObjectType.CLOSURE => return self.call(@ptrCast(callee.object), arg_count),
+                ObjectType.NATIVE => {
                     const native: *Native = @ptrCast(callee.object);
                     const stack_top = self.stack.len;
                     const result = native.function(self.stack.items[stack_top - arg_count .. stack_top]);

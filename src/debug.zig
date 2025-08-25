@@ -7,7 +7,7 @@ const values = @import("values.zig");
 const OpCode = chunks.OpCode;
 const Function = objects.Function;
 
-pub fn disassemble_chunk(chunk: *chunks.Chunk, name: []const u8, stdout: anytype) !void {
+pub fn disassemble_chunk(chunk: *const chunks.Chunk, name: []const u8, stdout: anytype) !void {
     try stdout.print("== {s} ==\n", .{name});
 
     var offset: usize = 0;
@@ -19,7 +19,7 @@ pub fn disassemble_chunk(chunk: *chunks.Chunk, name: []const u8, stdout: anytype
     try stdout.flush();
 }
 
-pub fn disassemble_instruction(chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+pub fn disassemble_instruction(chunk: *const chunks.Chunk, offset: usize, stdout: anytype) !usize {
     try stdout.print("{d:0>4} ", .{offset});
 
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
@@ -95,14 +95,14 @@ fn simple_instruction(name: []const u8, offset: usize, stdout: anytype) !usize {
     return offset + 1;
 }
 
-fn byte_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+fn byte_instruction(name: []const u8, chunk: *const chunks.Chunk, offset: usize, stdout: anytype) !usize {
     const slot = chunk.code.items[offset + 1];
 
     try stdout.print("{s:<16} {d:4}\n", .{ name, slot });
     return offset + 2;
 }
 
-fn jump_instruction(name: []const u8, comptime sign: u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+fn jump_instruction(name: []const u8, comptime sign: u8, chunk: *const chunks.Chunk, offset: usize, stdout: anytype) !usize {
     const high: u16 = chunk.code.items[offset + 1];
     const low: u16 = chunk.code.items[offset + 2];
     const jump = (high << 8) + low;
@@ -116,7 +116,7 @@ fn jump_instruction(name: []const u8, comptime sign: u8, chunk: *chunks.Chunk, o
     return offset + 3;
 }
 
-fn constant_instruction(name: []const u8, chunk: *chunks.Chunk, offset: usize, stdout: anytype) !usize {
+fn constant_instruction(name: []const u8, chunk: *const chunks.Chunk, offset: usize, stdout: anytype) !usize {
     const constant = chunk.code.items[offset + 1];
 
     try stdout.print("{s:<16} {d:4} '", .{ name, constant });

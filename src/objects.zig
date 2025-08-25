@@ -10,7 +10,7 @@ const Value = values.Value;
 const ValueType = values.ValueType;
 const VM = vm_mod.VM;
 
-pub const ObjType = enum {
+pub const ObjectType = enum {
     CLOSURE,
     FUNCTION,
     NATIVE,
@@ -18,31 +18,31 @@ pub const ObjType = enum {
     UPVALUE,
 };
 
-pub const Obj = struct {
+pub const Object = struct {
     const Self = @This();
 
-    obj_type: ObjType,
-    next: ?*Obj,
+    type: ObjectType,
+    next: ?*Object,
 
     pub fn print(self: *const Self, stdout: anytype) !void {
-        switch (self.obj_type) {
-            ObjType.CLOSURE => {
+        switch (self.type) {
+            ObjectType.CLOSURE => {
                 const closure: *const Closure = @ptrCast(self);
                 try print_function(stdout, closure.function);
             },
-            ObjType.FUNCTION => {
+            ObjectType.FUNCTION => {
                 const function: *const Function = @ptrCast(self);
                 try print_function(stdout, function);
             },
-            ObjType.NATIVE => {
+            ObjectType.NATIVE => {
                 // const native: *const Native = @ptrCast(self);
                 try stdout.print("<native fn>", .{});
             },
-            ObjType.STRING => {
+            ObjectType.STRING => {
                 const str: *const String = @ptrCast(self);
                 try stdout.print("{s}", .{str.chars});
             },
-            ObjType.UPVALUE => {
+            ObjectType.UPVALUE => {
                 // const upvalue: *const Upvalue = @ptrCast(self);
                 try stdout.print("upvalue", .{});
             },
@@ -59,9 +59,9 @@ pub const Obj = struct {
 };
 
 pub const Function = struct {
-    const obj_type = ObjType.FUNCTION;
+    const Type = ObjectType.FUNCTION;
 
-    obj: Obj,
+    object: Object,
     arity: usize,
     upvalue_count: usize,
     chunk: Chunk,
@@ -71,39 +71,39 @@ pub const Function = struct {
 pub const NativeFn = *const fn (args: []Value) Value;
 
 pub const Native = struct {
-    const obj_type = ObjType.NATIVE;
+    const Type = ObjectType.NATIVE;
 
-    obj: Obj,
+    object: Object,
     function: NativeFn,
 };
 
 pub const String = struct {
-    const obj_type = ObjType.STRING;
+    const Type = ObjectType.STRING;
 
-    obj: Obj,
+    object: Object,
     chars: []const u8,
     hash: u32,
 };
 
 pub const Upvalue = struct {
-    const obj_type = ObjType.UPVALUE;
+    const Type = ObjectType.UPVALUE;
 
-    obj: Obj,
+    object: Object,
     location: *Value,
     closed: Value,
     next: ?*Upvalue,
 };
 
 pub const Closure = struct {
-    const obj_type = ObjType.CLOSURE;
+    const Type = ObjectType.CLOSURE;
 
-    obj: Obj,
+    object: Object,
     function: *Function,
     upvalues: std.ArrayList(?*Upvalue),
 };
 
-pub fn is(value: *Value, obj_type: ObjType) bool {
-    return value.tag() == ValueType.object and value.object.obj_type == obj_type;
+pub fn is(value: *Value, @"type": ObjectType) bool {
+    return value.tag() == ValueType.object and value.object.type == @"type";
 }
 
 pub fn new_function(vm: *VM) !*Function {
@@ -157,6 +157,15 @@ fn allocate_string(vm: *VM, chars: []const u8, hash: u32) !*String {
     return str;
 }
 
+fn hash_string(key: []const u8) u32 {
+    var hash: u32 = 2166136261;
+    for (key) |c| {
+        hash ^= c;
+        hash *%= 16777619;
+    }
+    return hash;
+}
+
 pub fn new_closure(vm: *VM, function: *Function) !*Closure {
     const closure = try allocate(vm, Closure);
     closure.function = function;
@@ -176,48 +185,39 @@ pub fn new_upvalue(vm: *VM, slot: *Value) !*Upvalue {
 fn allocate(vm: *VM, comptime T: type) !*T {
     const object = try vm.ctx.allocator.create(T);
 
-    object.obj.obj_type = T.obj_type;
-    object.obj.next = vm.obj_list;
-    vm.obj_list = @ptrCast(object);
+    object.object.type = T.Type;
+    object.object.next = vm.object_list;
+    vm.object_list = @ptrCast(object);
 
     return object;
 }
 
-pub fn deallocate(vm: *VM, obj: *Obj) void {
+pub fn deallocate(vm: *VM, obj: *Object) void {
     const allocator = vm.ctx.allocator;
 
-    switch (obj.obj_type) {
-        ObjType.CLOSURE => {
+    switch (obj.type) {
+        ObjectType.CLOSURE => {
             const closure: *Closure = @ptrCast(obj);
             closure.upvalues.deinit(allocator);
             allocator.destroy(closure);
         },
-        ObjType.FUNCTION => {
+        ObjectType.FUNCTION => {
             const function: *Function = @ptrCast(obj);
             function.chunk.deinit(allocator);
             allocator.destroy(function);
         },
-        ObjType.NATIVE => {
+        ObjectType.NATIVE => {
             const native: *Native = @ptrCast(obj);
             allocator.destroy(native);
         },
-        ObjType.STRING => {
+        ObjectType.STRING => {
             const str: *String = @ptrCast(obj);
             allocator.free(str.chars);
             allocator.destroy(str);
         },
-        ObjType.UPVALUE => {
+        ObjectType.UPVALUE => {
             const upvalue: *Upvalue = @ptrCast(obj);
             allocator.destroy(upvalue);
         },
     }
-}
-
-fn hash_string(key: []const u8) u32 {
-    var hash: u32 = 2166136261;
-    for (key) |c| {
-        hash ^= c;
-        hash *%= 16777619;
-    }
-    return hash;
 }
