@@ -1,13 +1,12 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
+const config = @import("config.zig");
 const debug = @import("debug.zig");
 const lexer_mod = @import("lexer.zig");
 const objects = @import("objects.zig");
 const values = @import("values.zig");
 const vm_mod = @import("vm.zig");
-
-const DEBUG_TRACING = true;
 
 const Allocator = std.mem.Allocator;
 const Chunk = chunks.Chunk;
@@ -134,7 +133,7 @@ fn end_compiler() Allocator.Error!*Function {
     try emit_return();
     const func = current.function;
 
-    if (comptime DEBUG_TRACING) {
+    if (comptime config.COMPTIME_DEBUG_TRACING) {
         if (!parser.had_error) {
             debug.disassemble_chunk(
                 current_chunk(),
