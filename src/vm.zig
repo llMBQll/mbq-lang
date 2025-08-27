@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const chunks = @import("chunks.zig");
+const config = @import("config.zig");
 const memory_mod = @import("memory.zig");
 const compiler = @import("compiler.zig");
 const debug = @import("debug.zig");
@@ -22,8 +23,6 @@ const Table = table.Table;
 const Value = values.Value;
 const ValueType = values.ValueType;
 const Memory = memory_mod.Memory;
-
-const DEBUG_TRACING = false;
 
 const FRAMES_MAX = 64;
 const STACK_MAX = FRAMES_MAX * std.math.maxInt(u8);
@@ -102,7 +101,7 @@ pub const VM = struct {
         var frame = self.frames.top();
 
         while (true) {
-            if (comptime DEBUG_TRACING) {
+            if (comptime config.RUNTIME_DEBUG_TRACING) {
                 self.disassemble_current_instruction(frame) catch |e| {
                     self.stderr.print("Failed to debug current instruction {}", .{e}) catch {};
                     self.stderr.flush() catch {};
